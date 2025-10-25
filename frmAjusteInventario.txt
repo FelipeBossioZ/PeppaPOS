@@ -185,7 +185,9 @@ Sub CargarProductosEnCache()
             Dim nombreKey As String
             nombreKey = "NOMBRE_" & UCase(datosProducto(0))
             If Not CacheProductos.Exists(nombreKey) Then
+                On Error Resume Next ' Añadido para ignorar errores de nombres duplicados
                 CacheProductos.Add nombreKey, codigo ' Referencia al código
+                On Error GoTo ErrorHandler ' Restaurar manejador de errores principal
             End If
         End If
     Next i

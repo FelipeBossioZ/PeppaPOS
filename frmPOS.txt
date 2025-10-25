@@ -3826,7 +3826,8 @@ End Sub
 
 Private Sub UserForm_QueryClose(Cancel As Integer, CloseMode As Integer)
     ' --- INICIO: Guardar venta no finalizada ---
-    If Me.lstVenta.ListCount > 0 Then
+    ' Solo preguntar si NO se está editando un item (evita error de tipos)
+    If Me.lstVenta.ListCount > 0 And Me.btnActualizarVenta.Tag = "" Then
         ' Preguntar al usuario si quiere guardar la venta como pendiente
         Dim respuesta As VbMsgBoxResult
         respuesta = MsgBox("Tiene una venta en curso. ¿Desea guardarla como pendiente para continuarla después?", _
@@ -3848,7 +3849,6 @@ Private Sub UserForm_QueryClose(Cancel As Integer, CloseMode As Integer)
     End If
 
     ' Preguntar si desea cerrar
-    Dim respuesta As Integer
     respuesta = MsgBox("¿Desea cerrar el Sistema POS?" & vbCrLf & _
                       "Se creará un backup automático", _
                       vbYesNo + vbQuestion, "Confirmar Cierre")
