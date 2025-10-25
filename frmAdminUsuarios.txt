@@ -1,0 +1,316 @@
+' UserForm: frmAdminUsuarios (VERSIÓN COMPLETA Y CORREGIDA)
+Option Explicit
+
+Dim wsUsuarios As Worksheet
+Dim modoEdicion As Boolean
+Dim idEdicion As Long
+
+Private Sub UserForm_Initialize()
+    InicializarFormulario
+End Sub
+
+Sub InicializarFormulario()
+    ' Configurar hoja de usuarios
+    Set wsUsuarios = ThisWorkbook.Sheets("Usuarios")
+    
+    ' Configurar ComboBox de niveles
+    With Me.cmbNivel
+        .Clear
+        .AddItem "Administrador"
+        .AddItem "Vendedor"
+        .AddItem "Invitado"
+        .ListIndex = 0
+    End With
+    
+    ' Configurar ListBox
+    Me.lstUsuarios.ColumnCount = 4
+    Me.lstUsuarios.ColumnWidths = "40;80;80;40"
+    
+    LimpiarCampos
+    CargarUsuarios
+    HabilitarEdicion False
+    
+    modoEdicion = False
+    Me.btnGuardar.Enabled = False
+    Me.btnEditar.Enabled = False
+    Me.btnEliminar.Enabled = False
+End Sub
+
+Sub CargarUsuarios()
+    On Error GoTo ErrorHandler
+    
+    Me.lstUsuarios.Clear
+    
+    ' Configurar columnas
+    Me.lstUsuarios.ColumnCount = 4
+    Me.lstUsuarios.ColumnWidths = "40;80;80;40"
+    
+    ' Cargar usuarios
+    Dim fila As Long
+    Dim ultimaFila As Long
+    ultimaFila = wsUsuarios.Cells(wsUsuarios.Rows.Count, "A").End(xlUp).Row
+    
+    If ultimaFila >= 2 Then
+        For fila = 2 To ultimaFila
+            Me.lstUsuarios.AddItem
+            Dim nuevaFila As Integer
+            nuevaFila = Me.lstUsuarios.ListCount - 1
+            
+            Me.lstUsuarios.List(nuevaFila, 0) = wsUsuarios.Cells(fila, 1).Value ' ID
+            Me.lstUsuarios.List(nuevaFila, 1) = wsUsuarios.Cells(fila, 2).Value ' Usuario
+            Me.lstUsuarios.List(nuevaFila, 2) = wsUsuarios.Cells(fila, 4).Value ' Nivel
+            Me.lstUsuarios.List(nuevaFila, 3) = wsUsuarios.Cells(fila, 5).Value ' Estado
+        Next fila
+    End If
+    
+    Exit Sub
+ErrorHandler:
+    MsgBox "Error cargando usuarios: " & Err.Description, vbCritical
+End Sub
+
+Sub LimpiarCampos()
+    Me.txtUsuario.Text = ""
+    Me.txtPassword.Text = ""
+    Me.txtConfirmar.Text = ""
+    Me.cmbNivel.ListIndex = 0
+    Me.chkActivo.Value = True
+End Sub
+
+Sub HabilitarEdicion(habilitar As Boolean)
+    Me.txtUsuario.Enabled = habilitar
+    Me.txtPassword.Enabled = habilitar
+    Me.txtConfirmar.Enabled = habilitar
+    Me.cmbNivel.Enabled = habilitar
+    Me.chkActivo.Enabled = habilitar
+    
+    Me.btnAgregar.Enabled = Not habilitar
+    Me.btnEditar.Enabled = Not habilitar And (Me.lstUsuarios.ListIndex >= 0)
+    Me.btnEliminar.Enabled = Not habilitar And (Me.lstUsuarios.ListIndex >= 0)
+    Me.btnGuardar.Enabled = habilitar
+    Me.btnCancelar.Enabled = habilitar
+End Sub
+
+Private Sub btnAgregar_Click()
+    LimpiarCampos
+    HabilitarEdicion True
+    modoEdicion = False
+    Me.txtUsuario.SetFocus
+End Sub
+
+Private Sub btnEditar_Click()
+    If Me.lstUsuarios.ListIndex < 0 Then
+        MsgBox "Seleccione un usuario de la lista", vbExclamation
+        Exit Sub
+    End If
+    
+    ' Obtener ID del usuario seleccionado
+    Dim idUsuario As Long
+    idUsuario = Me.lstUsuarios.List(Me.lstUsuarios.ListIndex, 0)
+    
+    ' Buscar y cargar datos del usuario
+    Dim fila As Long
+    For fila = 2 To wsUsuarios.Cells(wsUsuarios.Rows.Count, "A").End(xlUp).Row
+        If wsUsuarios.Cells(fila, 1).Value = idUsuario Then
+            ' Cargar datos en los campos
+            Me.txtUsuario.Text = wsUsuarios.Cells(fila, 2).Value
+            Me.txtPassword.Text = "" ' No mostrar contraseña actual
+            Me.txtConfirmar.Text = ""
+            
+            ' Configurar nivel en ComboBox
+            Dim nivel As String
+            nivel = wsUsuarios.Cells(fila, 4).Value
+            Dim i As Integer
+            For i = 0 To Me.cmbNivel.ListCount - 1
+                If Me.cmbNivel.List(i) = nivel Then
+                    Me.cmbNivel.ListIndex = i
+                    Exit For
+                End If
+            Next i
+            
+            ' Configurar estado
+            Me.chkActivo.Value = (wsUsuarios.Cells(fila, 5).Value = "SI")
+            
+            idEdicion = idUsuario
+            modoEdicion = True
+            HabilitarEdicion True
+            Exit For
+        End If
+    Next fila
+End Sub
+
+Private Sub btnEliminar_Click()
+    If Me.lstUsuarios.ListIndex < 0 Then
+        MsgBox "Seleccione un usuario de la lista", vbExclamation
+        Exit Sub
+    End If
+    
+    Dim idUsuario As Long
+    Dim usuario As String
+    idUsuario = Me.lstUsuarios.List(Me.lstUsuarios.ListIndex, 0)
+    usuario = Me.lstUsuarios.List(Me.lstUsuarios.ListIndex, 1)
+    
+    ' No permitir eliminar el usuario actual
+    Dim usuarioActual As String
+    On Error Resume Next
+    usuarioActual = ThisWorkbook.Names("UsuarioActual").RefersToRange.Value
+    If usuario = usuarioActual Then
+        MsgBox "No puede eliminar su propio usuario mientras está conectado", vbExclamation
+        Exit Sub
+    End If
+    
+    Dim respuesta As Integer
+    respuesta = MsgBox("¿Está seguro de eliminar al usuario: " & usuario & "?", vbYesNo + vbQuestion, "Confirmar Eliminación")
+    
+    If respuesta = vbYes Then
+        ' Buscar y eliminar usuario
+        Dim fila As Long
+        For fila = 2 To wsUsuarios.Cells(wsUsuarios.Rows.Count, "A").End(xlUp).Row
+            If wsUsuarios.Cells(fila, 1).Value = idUsuario Then
+                wsUsuarios.Rows(fila).Delete
+                CargarUsuarios
+                LimpiarCampos
+                MsgBox "Usuario eliminado exitosamente", vbInformation
+                Exit For
+            End If
+        Next fila
+    End If
+End Sub
+
+Private Sub btnGuardar_Click()
+    GuardarUsuario
+End Sub
+
+Sub GuardarUsuario()
+    ' Validaciones
+    If Trim(Me.txtUsuario.Text) = "" Then
+        MsgBox "Ingrese el nombre de usuario", vbExclamation
+        Me.txtUsuario.SetFocus
+        Exit Sub
+    End If
+    
+    If Not modoEdicion And (Trim(Me.txtPassword.Text) = "" Or Trim(Me.txtConfirmar.Text) = "") Then
+        MsgBox "Ingrese y confirme la contraseña", vbExclamation
+        Me.txtPassword.SetFocus
+        Exit Sub
+    End If
+    
+    If Me.txtPassword.Text <> Me.txtConfirmar.Text Then
+        MsgBox "Las contraseñas no coinciden", vbExclamation
+        Me.txtPassword.Text = ""
+        Me.txtConfirmar.Text = ""
+        Me.txtPassword.SetFocus
+        Exit Sub
+    End If
+    
+    If Len(Me.txtPassword.Text) < 4 And Not modoEdicion Then
+        MsgBox "La contraseña debe tener al menos 4 caracteres", vbExclamation
+        Exit Sub
+    End If
+    
+    ' Verificar que el usuario no exista (solo en modo agregar)
+    If Not modoEdicion Then
+        If UsuarioExiste(Me.txtUsuario.Text) Then
+            MsgBox "El usuario ya existe en el sistema", vbExclamation
+            Me.txtUsuario.SetFocus
+            Exit Sub
+        End If
+    End If
+    
+    ' Guardar usuario
+    If modoEdicion Then
+        ActualizarUsuario
+    Else
+        CrearUsuario
+    End If
+    
+    CargarUsuarios
+    LimpiarCampos
+    HabilitarEdicion False
+    modoEdicion = False
+End Sub
+
+Function UsuarioExiste(usuario As String) As Boolean
+    Dim fila As Long
+    For fila = 2 To wsUsuarios.Cells(wsUsuarios.Rows.Count, "A").End(xlUp).Row
+        If LCase(wsUsuarios.Cells(fila, 2).Value) = LCase(usuario) Then
+            UsuarioExiste = True
+            Exit Function
+        End If
+    Next fila
+    UsuarioExiste = False
+End Function
+
+Sub CrearUsuario()
+    On Error GoTo ErrorHandler
+    
+    Dim ultimaFila As Long
+    ultimaFila = wsUsuarios.Cells(wsUsuarios.Rows.Count, "A").End(xlUp).Row + 1
+    
+    ' Generar nuevo ID
+    Dim nuevoID As Long
+    nuevoID = 1
+    If ultimaFila > 2 Then
+        nuevoID = Application.WorksheetFunction.Max(wsUsuarios.Range("A:A")) + 1
+    End If
+    
+    ' Guardar nuevo usuario
+    wsUsuarios.Cells(ultimaFila, 1).Value = nuevoID
+    wsUsuarios.Cells(ultimaFila, 2).Value = Trim(Me.txtUsuario.Text)
+    wsUsuarios.Cells(ultimaFila, 3).Value = Me.txtPassword.Text ' Sin encriptar
+    wsUsuarios.Cells(ultimaFila, 4).Value = Me.cmbNivel.Value
+    wsUsuarios.Cells(ultimaFila, 5).Value = IIf(Me.chkActivo.Value, "SI", "NO")
+    
+    MsgBox "Usuario creado exitosamente", vbInformation
+    Exit Sub
+    
+ErrorHandler:
+    MsgBox "Error creando usuario: " & Err.Description, vbCritical
+End Sub
+
+Sub ActualizarUsuario()
+    On Error GoTo ErrorHandler
+    
+    Dim fila As Long
+    For fila = 2 To wsUsuarios.Cells(wsUsuarios.Rows.Count, "A").End(xlUp).Row
+        If wsUsuarios.Cells(fila, 1).Value = idEdicion Then
+            ' Actualizar datos
+            wsUsuarios.Cells(fila, 2).Value = Trim(Me.txtUsuario.Text)
+            
+            ' Actualizar contraseña solo si se ingresó una nueva
+            If Trim(Me.txtPassword.Text) <> "" Then
+                wsUsuarios.Cells(fila, 3).Value = Me.txtPassword.Text
+            End If
+            
+            wsUsuarios.Cells(fila, 4).Value = Me.cmbNivel.Value
+            wsUsuarios.Cells(fila, 5).Value = IIf(Me.chkActivo.Value, "SI", "NO")
+            
+            MsgBox "Usuario actualizado exitosamente", vbInformation
+            Exit For
+        End If
+    Next fila
+    Exit Sub
+    
+ErrorHandler:
+    MsgBox "Error actualizando usuario: " & Err.Description, vbCritical
+End Sub
+
+Private Sub btnCancelar_Click()
+    LimpiarCampos
+    HabilitarEdicion False
+    modoEdicion = False
+End Sub
+
+Private Sub btnCerrar_Click()
+    Unload Me
+End Sub
+
+Private Sub lstUsuarios_Click()
+    ' Habilitar botones cuando se selecciona un usuario
+    If Me.lstUsuarios.ListIndex >= 0 Then
+        Me.btnEditar.Enabled = True
+        Me.btnEliminar.Enabled = True
+    Else
+        Me.btnEditar.Enabled = False
+        Me.btnEliminar.Enabled = False
+    End If
+End Sub

@@ -1,0 +1,4441 @@
+' frmPOS (frm PRINCIPAL)
+
+
+' ==================================================
+' SISTEMA POS COMPLETO
+' ==================================================
+
+' Agregar al inicio del código del formulario, antes de cualquier Sub
+Private Declare PtrSafe Function GetAsyncKeyState Lib "user32" (ByVal vKey As Long) As Integer
+
+' Variables globales
+' === VARIABLE GLOBAL PARA AJUSTES ===
+Dim filaProductoActual As Long
+Dim wsProductos As Worksheet
+Dim wsVentas As Worksheet
+Dim wsClientes As Worksheet
+Dim wsProveedores As Worksheet
+Dim numeroVenta As Long
+Dim ModoActual As String ' "POS" o "HISTORIAL"
+Dim ModoInventario As Boolean ' Variable global para modo inventario
+
+Option Explicit
+
+' === Catálogo en memoria (rápido) ===
+Private catArr As Variant        ' A..G desde la hoja (2D Variant)
+Private catCargado As Boolean
+
+' Límite opcional para PC lentos (muestra solo primeros N en la lista completa)
+Private Const LIMITE_LISTADO As Long = 500
+
+' Convierte Null a vacío
+Private Function Nz(v, Optional rep As String = "") As String
+    If IsError(v) Then
+        Nz = rep
+    ElseIf IsNull(v) Or IsEmpty(v) Then
+        Nz = rep
+    Else
+        Nz = CStr(v)
+    End If
+End Function
+
+' Normaliza a mayúscula para búsquedas insensibles
+Private Function Up(s As Variant) As String
+    Up = UCase$(Nz(s))
+End Function
+
+
+
+Function FormatearPrecioTexto(valor As Double) As String
+    FormatearPrecioTexto = "$" & Format(valor, "#,##0")
+End Function
+
+Function NumeroATexto(valor As Variant) As String
+    ' Convierte cualquier número a texto con formato español
+    If IsNumeric(valor) Then
+        NumeroATexto = Format(valor, "#,##0")
+        ' Cambiar punto por punto para separador de miles
+        NumeroATexto = Replace(NumeroATexto, ",", ".")
+    Else
+        NumeroATexto = CStr(valor)
+    End If
+End Function
+
+Function PrecioATexto(valor As Variant) As String
+    ' Convierte precio a texto con símbolo $
+    If IsNumeric(valor) Then
+        PrecioATexto = "$" & Format(valor, "#,##0")
+        PrecioATexto = Replace(PrecioATexto, ",", ".")
+    Else
+        PrecioATexto = CStr(valor)
+    End If
+End Function
+
+
+
+Private Sub btnAdmin_Click()
+    frmAdmin.Show vbModeless
+End Sub
+
+
+' ==================================================
+' INICIALIZACIÓN
+' ==================================================
+
+Private Sub UserForm_Initialize()
+    On Error GoTo ErrorHandler
+    
+    ' 1) Hoja(s) que usa el POS
+    Set wsProductos = Hoja1                 ' <— CodeName de tu hoja de productos
+    'Set wsProductos = ThisWorkbook.Worksheets("Hoja1")   ' <— por nombre, si prefieres
+
+    Set wsVentas = ThisWorkbook.Worksheets("Ventas")
+    Set wsClientes = ThisWorkbook.Worksheets("Clientes")
+    On Error Resume Next
+    Set wsProveedores = ThisWorkbook.Worksheets("Proveedores")
+    On Error GoTo ErrorHandler
+    
+    
+    CargarCatalogoEnMemoria
+    PintarLista ""   ' lista completa (capada por LIMITE_LISTADO)
+        
+    If Not modCacheGlobal.CacheCargado Then
+        Call modCacheGlobal.InicializarSistemaRapido
+    End If
+    
+    
+    
+''    Tamaño sistema
+    ' Hacer el formulario más grande
+    Me.Width = Application.Width * 0.8
+    Me.Height = Application.Height * 0.99
+'
+'    ' Centrarlo
+    Me.StartUpPosition = 0
+    Me.Top = Application.Top + (Application.Height - Me.Height) / 2
+    Me.Left = Application.Left + (Application.Width - Me.Width) / 2
+    
+    ' Operación con teclas
+'     Me.KeyPreview = True
+'
+'    Me.btnFinalizar.Caption = "[F4] FINALIZAR"
+'    Me.btnLimpiar.Caption = "[ESC] Limpiar"
+'    Me.btnBuscar.Caption = "[F2] Buscar"
+     
+    
+    ' Configurar las hojas de trabajo
+    Set wsProductos = ThisWorkbook.Sheets("Hoja1")
+    Set wsVentas = ThisWorkbook.Sheets("Ventas")
+    Set wsClientes = ThisWorkbook.Sheets("Clientes")
+    
+    ' Intentar configurar proveedores (puede no existir)
+    On Error Resume Next
+    Set wsProveedores = ThisWorkbook.Sheets("Proveedores")
+    On Error GoTo ErrorHandler
+    
+    ' Configurar número de venta
+    If wsVentas.Cells(wsVentas.Rows.Count, "C").End(xlUp).Row > 1 Then
+        numeroVenta = wsVentas.Cells(wsVentas.Rows.Count, "C").End(xlUp).Value + 1
+    Else
+        numeroVenta = 1
+    End If
+    
+    ' Inicializar variables
+    ModoActual = "POS"
+    
+    ' Cargar datos iniciales
+    Call ConfigurarInterfazSegunNivel
+    Call ConfigurarBotonesSegunUsuario
+    Call CargarProductos
+    Call CargarClientes
+    Call LimpiarVenta
+    
+    ' Configurar interfaz inicial
+    Call MostrarModoPOS
+    
+     'VISUALES PEPPONCIO
+   Call AplicarTemaVisual
+   Call AgregarIconosBotones
+    
+    ' Configurar controles nuevos
+    Me.lstNombre.Visible = True  ' Se mostrará cuando se busque
+    
+    ' Verificar si existe txtValorUnd o lblValorUnitario
+    On Error Resume Next
+    Me.lblValorUnitario.Visible = True
+    Me.lblValorUnitario.Caption = "Valor Unitario:"
+    
+    ' El control puede llamarse txtValorUnd o txtValorUnitario
+    If Not Me.txtValorUnd Is Nothing Then
+        Me.txtValorUnd.Visible = True
+        Me.txtValorUnd.Locked = True ' Solo lectura
+    End If
+    
+    
+    
+   
+    On Error GoTo 0
+    
+    Me.btnAnular.Visible = False
+    'Inicial con el mouse en buscar
+    
+    Call ActualizarVentasDelDia
+    Exit Sub
+    
+    
+    
+ErrorHandler:
+    MsgBox "Error al inicializar: " & Err.Description, vbCritical
+   
+    
+End Sub
+
+' Agregar después de UserForm_Initialize
+Sub ActualizarVentasDelDia()
+    Dim t As Double: t = TNow
+    On Error GoTo EH
+    SpeedOn
+
+    Dim ventaHoy As Double
+    Dim cantidadVentas As Integer
+    Dim fila As Long
+    
+    ventaHoy = 0
+    cantidadVentas = 0
+    
+    ' Calcular ventas del día actual
+    For fila = 2 To wsVentas.Cells(wsVentas.Rows.Count, "A").End(xlUp).Row
+        If wsVentas.Cells(fila, 1).Value = Date And _
+           wsVentas.Cells(fila, 10).Value <> "ANULADA" Then
+            ventaHoy = ventaHoy + Val(wsVentas.Cells(fila, 9).Value)
+            ' Contar ventas únicas
+            If wsVentas.Cells(fila, 8).Value = 1 Then
+                cantidadVentas = cantidadVentas + 1
+            End If
+        End If
+    Next fila
+    
+    ' Actualizar el Label con formato llamativo
+    Me.lblVentasHoy.Caption = "VENTAS HOY: $" & Format(ventaHoy, "#,##0") & _
+                              " (" & cantidadVentas & " ventas)"
+    Me.lblVentasHoy.Font.Bold = True
+    Me.lblVentasHoy.Font.Size = 12
+    Me.lblVentasHoy.BackColor = RGB(0, 176, 80) ' Verde
+    Me.lblVentasHoy.ForeColor = RGB(255, 255, 255) ' Blanco
+    
+OUT:
+    SpeedOff
+    Debug.Print "FinalizarCompra", Format(TNow - t, "0.000") & " s"
+    Exit Sub
+EH:
+SpeedOff:     MsgBox "Error: " & Err.Description
+
+End Sub
+'Private Sub UserForm_QueryClose(Cancel As Integer, CloseMode As Integer)
+'    If MsgBox("¿Cerrar el Sistema POS?", vbYesNo + vbQuestion, "Confirmar") = vbNo Then
+'        Cancel = True
+'    End If
+'End Sub
+   
+' Private Sub UserForm_QueryClose(Cancel As Integer, CloseMode As Integer)
+'    If MsgBox("¿Cerrar el Sistema POS?", vbYesNo + vbQuestion, "Confirmar") = vbNo Then
+'        Cancel = True
+'    Else
+'        ' CREAR BACKUP AUTOMÁTICO
+'        Call BackupAutomaticoAlCerrar
+'    End If
+'End Sub
+    
+    
+
+
+' ==================================================
+' MODO POS - VENTAS
+' ==================================================
+
+Sub MostrarModoPOS()
+    ModoActual = "POS"
+    
+    ' Mostrar controles de POS
+    Me.lblProductos.Visible = True
+    Me.lstProductos.Visible = True
+    Me.lblVenta.Visible = True
+    Me.lstVenta.Visible = True
+    Me.lblCantidad.Visible = True
+    Me.txtCantidad.Visible = True
+    Me.btnAgregar.Visible = True
+    Me.btnEliminar.Visible = True
+    Me.lblCliente.Visible = True
+    Me.cmbCliente.Visible = True
+    Me.lblTotalTexto.Visible = True
+    Me.lblTotal.Visible = True
+    Me.btnFinalizar.Visible = True
+    Me.btnLimpiar.Visible = True
+    Me.btnBuscar.Visible = True
+    Me.txtBuscar.Visible = True
+    Me.lblBuscar.Visible = True
+    Me.btnHistorial.Visible = True
+    Me.btnPosicionar.Visible = True
+    Me.txtValorUnd.Visible = True
+    Me.lstNombre.Visible = True
+        
+    
+    ' Ocultar controles de historial
+    Me.lblTituloHistorial.Visible = False
+    Me.lstHistorial.Visible = False
+    Me.btnVolverPOS.Visible = False
+    Me.btnActualizarHistorial.Visible = False
+    Me.btnAnular.Visible = False
+    
+    ' Cambiar título
+'    Me.Caption = "SISTEMA PUNTO DE VENTA"
+    
+    ' Cargar productos
+    Call CargarProductos
+'    Call LimpiarVenta
+    Call ActualizarVentasDelDia
+    
+'    ' Enfocar en búsqueda
+'    Me.txtBuscar.SetFocus
+    
+    ' Ocultar botones de impresión/PDF en modo POS
+    Me.btnImprimir.Visible = False
+    Me.btnGuardarPDF.Visible = False
+    Me.frameReportes.Visible = False
+    Me.frameAjustes.Visible = False
+    
+    
+End Sub
+
+' ==================================================
+' MODO HISTORIAL
+' ==================================================
+
+Private Sub btnHistorial_Click()
+    Call MostrarHistorialVentas
+End Sub
+
+Private Sub btnVolverPOS_Click()
+    Call MostrarModoPOS
+
+'' NO llamar a MostrarModoPOS completo, solo cambiar la visibilidad
+'
+'    ModoActual = "POS"
+'
+'    ' Ocultar frame de ajustes
+'    Me.frameAjustes.Visible = False
+'
+'    ' Mostrar controles de POS sin reiniciar
+'    Me.lblProductos.Visible = True
+'    Me.lstProductos.Visible = True
+'    Me.lblVenta.Visible = True
+'    Me.lstVenta.Visible = True
+'    Me.lblCantidad.Visible = True
+'    Me.txtCantidad.Visible = True
+'    Me.btnAgregar.Visible = True
+'    Me.btnEliminar.Visible = True
+'    Me.lblCliente.Visible = True
+'    Me.cmbCliente.Visible = True
+'    Me.lblTotalTexto.Visible = True
+'    Me.lblTotal.Visible = True
+'    Me.btnFinalizar.Visible = True
+'    Me.btnLimpiar.Visible = True
+'    Me.btnBuscar.Visible = True
+'    Me.txtBuscar.Visible = True
+'    Me.lblBuscar.Visible = True
+'
+'
+'
+'    ' IMPORTANTE: Solo actualizar productos sin limpiar venta
+'    Call CargarProductos
+'    ' NO llamar a LimpiarVenta
+    
+    Me.Caption = "SISTEMA PUNTO DE VENTA"
+    Me.txtBuscar.Text = ""
+    Me.txtBuscar.SetFocus
+
+
+
+
+End Sub
+
+Private Sub btnActualizarHistorial_Click()
+    Call CargarHistorialVentas
+End Sub
+
+Sub MostrarHistorialVentas()
+    ModoActual = "HISTORIAL"
+    
+    ' Ocultar controles de POS
+    Me.lblProductos.Visible = False
+    Me.lstProductos.Visible = False
+    Me.lblVenta.Visible = False
+    Me.lstVenta.Visible = False
+    Me.lblCantidad.Visible = False
+    Me.txtCantidad.Visible = False
+    Me.btnAgregar.Visible = False
+    Me.btnEliminar.Visible = False
+    Me.lblCliente.Visible = False
+    Me.cmbCliente.Visible = False
+    Me.lblTotalTexto.Visible = False
+    Me.lblTotal.Visible = False
+    Me.btnFinalizar.Visible = False
+    Me.btnLimpiar.Visible = False
+    Me.btnBuscar.Visible = False
+    Me.txtBuscar.Visible = False
+    Me.lblBuscar.Visible = False
+    Me.btnHistorial.Visible = False
+    Me.btnPosicionar.Visible = False
+    Me.lstNombre.Visible = False
+    Me.lblValorUnitario.Visible = False
+    Me.txtValorUnd.Visible = False
+    'Pepponcio Changes
+'    Me.lblVentaHoy.Visible = False
+'    Me.btnAdminUsuarios.Visible = False
+    Me.lblArticulo.Visible = False
+'    Me.lblVentasHoy.Visible = False
+    
+    
+    
+    
+    
+    ' Mostrar controles de historial
+    Me.lblTituloHistorial.Visible = True
+    Me.lstHistorial.Visible = True
+    Me.btnVolverPOS.Visible = True
+    Me.btnActualizarHistorial.Visible = True
+    Me.btnAnular.Visible = True
+    
+    ' Cambiar título
+    Me.Caption = "HISTORIAL DE VENTAS"
+    
+    ' Cargar historial
+    Call CargarHistorialVentas
+    
+    ' Mostrar botones de impresión SOLO en historial
+    Me.btnImprimir.Visible = True
+    Me.btnGuardarPDF.Caption = "Ver PDF"
+    Me.btnGuardarPDF.Visible = True
+    Me.frameReportes.Visible = False
+    Me.frameAjustes.Visible = False
+    
+    
+    
+End Sub
+
+' ==================================================
+' CARGA DE DATOS - PRODUCTOS Y CLIENTES
+' ==================================================
+
+Sub CargarProductos()
+    On Error GoTo ErrorHandler
+
+    Dim ult As Long, arr As Variant, i As Long, idx As Integer
+
+    ' Lee todos los productos de una sola (rápido)
+    With wsProductos  ' Hoja de productos (ya la tienes como variable a nivel de formulario)
+        ult = .Cells(.Rows.Count, "A").End(xlUp).Row
+        If ult < 3 Then
+            Me.lstProductos.Clear
+            Exit Sub
+        End If
+        arr = .Range("A3:G" & ult).Value   ' A: Código, B: Descripción, F: Precio, E: Stock
+    End With
+
+    ' Limpia y configura el ListBox del POS
+    Me.lstProductos.Clear
+    Me.lstProductos.ColumnCount = 4
+    Me.lstProductos.ColumnWidths = "70;300;70;40"   ' ajusta si quieres
+
+    ' Rellena desde el array (MUY rápido)
+    For i = 1 To UBound(arr, 1)
+        Me.lstProductos.AddItem
+        idx = Me.lstProductos.ListCount - 1
+
+        Me.lstProductos.List(idx, 0) = arr(i, 1)                  ' Código (col A)
+        Me.lstProductos.List(idx, 1) = arr(i, 2)                  ' Descripción (col B)
+        Me.lstProductos.List(idx, 2) = Format(arr(i, 6), "$#,##0") ' Precio (col F = 6)
+        Me.lstProductos.List(idx, 3) = arr(i, 5)                  ' Stock  (col E = 5)
+
+        ' Si el PC es muy lento, puedes limitar temporalmente
+        'If idx > 500 Then Exit For
+    Next i
+
+    Exit Sub
+
+ErrorHandler:
+    MsgBox "Error en CargarProductos (POS): " & Err.Description, vbExclamation
+End Sub
+
+
+
+Sub CargarClientes()
+    On Error GoTo ErrorHandler
+    
+    Dim fila As Long
+    
+    ' Limpiar ComboBox
+    Me.cmbCliente.Clear
+    
+    ' Agregar cliente general
+    'Me.cmbCliente.AddItem "CONSUMIDOR FINAL"
+    
+    ' Cargar clientes de la hoja
+    For fila = 2 To wsClientes.Cells(wsClientes.Rows.Count, "A").End(xlUp).Row
+        If wsClientes.Cells(fila, 2).Value <> "" Then
+            Me.cmbCliente.AddItem wsClientes.Cells(fila, 2).Value
+        End If
+    Next fila
+    
+    ' Seleccionar el primero
+    Me.cmbCliente.ListIndex = 0
+    
+    Exit Sub
+    
+ErrorHandler:
+    MsgBox "Error cargando clientes: " & Err.Description, vbCritical
+End Sub
+
+' ==================================================
+' CARGA DE HISTORIAL DE VENTAS
+' ==================================================
+
+Sub CargarHistorialVentas()
+    On Error GoTo ErrorHandler
+    
+    ' LÍMITE DE VENTAS A MOSTRAR
+    Dim limiteVentas As Long
+    limiteVentas = 100 ' Solo las últimas 100
+    
+    ' Usar el ListBox ESPECIAL para historial
+    Me.lstHistorial.Clear
+    Me.lstHistorial.ColumnCount = 7
+    Me.lstHistorial.ColumnWidths = "50;80;180;50;50;70;70"  ' Ajustar anchos
+    
+    ' Agregar encabezados
+    Me.lstHistorial.AddItem
+    Me.lstHistorial.List(0, 0) = "VENTA"
+    Me.lstHistorial.List(0, 1) = "ESTADO"     ' Estado en segunda columna
+    Me.lstHistorial.List(0, 2) = "CLIENTE"
+    Me.lstHistorial.List(0, 3) = "FECHA"
+    Me.lstHistorial.List(0, 4) = "ITEMS"
+    Me.lstHistorial.List(0, 5) = "ART."
+    Me.lstHistorial.List(0, 6) = "TOTAL"
+    
+    ' Verificar si hay ventas registradas
+    Dim ultimaFila As Long
+    ultimaFila = wsVentas.Cells(wsVentas.Rows.Count, "A").End(xlUp).Row
+    
+    If ultimaFila < 2 Then
+        Me.lstHistorial.AddItem
+        Me.lstHistorial.List(1, 2) = "No hay ventas registradas"
+        Exit Sub
+    End If
+    
+    ' Procesar ventas
+    Dim fila As Long
+    Dim ventasUnicas As Object
+    Set ventasUnicas = CreateObject("Scripting.Dictionary")
+    
+    ' Agrupar ventas por número
+        Dim inicioFila As Long
+        If ultimaFila > limiteVentas Then
+            inicioFila = ultimaFila - limiteVentas
+        Else
+            inicioFila = 2
+        End If
+        
+        For fila = inicioFila To ultimaFila
+        
+        Dim numVenta As Long
+        numVenta = wsVentas.Cells(fila, 3).Value
+
+        If Not ventasUnicas.Exists(numVenta) Then
+            ' Nueva venta encontrada
+            ventasUnicas.Add numVenta, CreateObject("Scripting.Dictionary")
+            ventasUnicas(numVenta).Add "cliente", wsVentas.Cells(fila, 4).Value
+            ventasUnicas(numVenta).Add "fecha", wsVentas.Cells(fila, 1).Value
+            ventasUnicas(numVenta).Add "total", 0
+            ventasUnicas(numVenta).Add "items", 0
+            ventasUnicas(numVenta).Add "articulos", CreateObject("Scripting.Dictionary")
+
+            ' IMPORTANTE: Solo marcar como ANULADA si realmente lo dice en la columna 10
+            If Trim(wsVentas.Cells(fila, 10).Value) = "ANULADA" Then
+                ventasUnicas(numVenta).Add "estado", "ANULADA"
+            Else
+                ventasUnicas(numVenta).Add "estado", "ACTIVA"
+            End If
+        End If
+
+        
+        
+        
+        
+        
+        
+        
+        
+        ' Sumar valores solo si no está anulada
+        If ventasUnicas(numVenta)("estado") <> "ANULADA" Then
+            ventasUnicas(numVenta)("total") = ventasUnicas(numVenta)("total") + wsVentas.Cells(fila, 9).Value
+        End If
+        
+        ventasUnicas(numVenta)("items") = ventasUnicas(numVenta)("items") + wsVentas.Cells(fila, 8).Value
+        
+        ' Contar artículos diferentes
+        Dim codigo As String
+        codigo = wsVentas.Cells(fila, 5).Value
+        If Not ventasUnicas(numVenta)("articulos").Exists(codigo) Then
+            ventasUnicas(numVenta)("articulos").Add codigo, 1
+        End If
+    Next fila
+    
+    ' Agregar ventas al ListBox de historial
+    Dim ventaKeys As Variant
+    ventaKeys = ventasUnicas.Keys
+    
+    Dim i As Long
+    For i = 0 To ventasUnicas.Count - 1
+        Dim ventaNum As Long
+        ventaNum = ventaKeys(i)
+        
+        Me.lstHistorial.AddItem
+        Dim nuevaFila As Integer
+        nuevaFila = Me.lstHistorial.ListCount - 1
+        
+        ' Columna 0: Número de venta
+        Me.lstHistorial.List(nuevaFila, 0) = ventaNum
+        
+        ' Columna 1: ESTADO (segunda columna como pediste)
+        If ventasUnicas(ventaNum)("estado") = "ANULADA" Then
+            Me.lstHistorial.List(nuevaFila, 1) = "** ANULADA **"
+        Else
+            Me.lstHistorial.List(nuevaFila, 1) = "ACTIVA"
+        End If
+        
+        ' Columna 2: Cliente
+        Me.lstHistorial.List(nuevaFila, 2) = ventasUnicas(ventaNum)("cliente")
+        
+        ' Columna 3: Fecha
+        Me.lstHistorial.List(nuevaFila, 3) = Format(ventasUnicas(ventaNum)("fecha"), "dd/mm/yy")
+        
+        ' Columna 4: Items
+        Me.lstHistorial.List(nuevaFila, 4) = ventasUnicas(ventaNum)("items")
+        
+        ' Columna 5: Artículos
+        Me.lstHistorial.List(nuevaFila, 5) = ventasUnicas(ventaNum)("articulos").Count
+        
+        ' Columna 6: Total
+        If ventasUnicas(ventaNum)("estado") = "ANULADA" Then
+            Me.lstHistorial.List(nuevaFila, 6) = "$0.00"
+        Else
+            Me.lstHistorial.List(nuevaFila, 6) = Format(ventasUnicas(ventaNum)("total"), "$#,##0.00")
+        End If
+    Next i
+    
+    ' Ordenar por número de venta (más recientes primero)
+    Call OrdenarHistorial
+    
+    ' Actualizar título
+    If ventasUnicas.Count > 0 Then
+        Me.lblTituloHistorial.Caption = "HISTORIAL DE VENTAS - " & ventasUnicas.Count & " ventas - Doble click para detalles"
+    Else
+        Me.lblTituloHistorial.Caption = "HISTORIAL DE VENTAS - No hay ventas registradas"
+    End If
+    
+    Exit Sub
+    
+ErrorHandler:
+    MsgBox "Error cargando historial: " & Err.Description, vbCritical
+End Sub
+
+' Ordenar historial
+Sub OrdenarHistorial()
+    Dim i As Long, j As Long
+    For i = 1 To Me.lstHistorial.ListCount - 2
+        For j = i + 1 To Me.lstHistorial.ListCount - 1
+            If Val(Me.lstHistorial.List(i, 0)) < Val(Me.lstHistorial.List(j, 0)) Then
+                ' Intercambiar filas (ahora con 7 columnas)
+                Dim temp(6) As Variant
+                Dim k As Integer
+                For k = 0 To 6
+                    temp(k) = Me.lstHistorial.List(i, k)
+                    Me.lstHistorial.List(i, k) = Me.lstHistorial.List(j, k)
+                    Me.lstHistorial.List(j, k) = temp(k)
+                Next k
+            End If
+        Next j
+    Next i
+End Sub
+
+' ==================================================
+' FUNCIONALIDADES POS - BÚSQUEDA Y VENTAS
+' ==================================================
+
+Private Sub btnBuscar_Enter()
+    PintarLista Me.txtBuscar.Text
+    
+    If Me.lstNombre.ListCount > 0 Then
+        Me.lstNombre.ListIndex = 0
+    End If
+End Sub
+
+Private Sub btnBuscar_Click()
+    PintarLista Me.txtBuscar.Text
+End Sub
+
+
+' ACTUALIZAR LA FUNCIÓN DE BÚSQUEDA
+'Sub BuscarProductos()
+'    On Error GoTo ErrorHandler
+'
+'    Dim textoBusqueda As String
+'    textoBusqueda = Trim(Me.txtBuscar.Text)
+'
+'    Me.lstProductos.Clear
+'    Me.lstNombre.Clear
+'
+'    If textoBusqueda = "" Then Exit Sub
+'
+'    ' USAR CACHE GLOBAL (INSTANTÁNEO)
+'    Dim resultados As Collection
+'    Set resultados = modCacheGlobal.BuscarRapido(textoBusqueda)
+'
+'    If resultados.Count = 0 Then
+'        MsgBox "No se encontraron productos", vbInformation
+'        Exit Sub
+'    End If
+'
+'    Me.lstNombre.Visible = True
+'
+'    Dim item As Variant
+'    For Each item In resultados
+'        Me.lstProductos.AddItem
+'        Me.lstProductos.List(Me.lstProductos.ListCount - 1, 0) = item(0) ' Código
+'        Me.lstProductos.List(Me.lstProductos.ListCount - 1, 1) = item(1) ' Descripción
+'        Me.lstProductos.List(Me.lstProductos.ListCount - 1, 2) = Format(item(2), "$#,##0")
+'        Me.lstProductos.List(Me.lstProductos.ListCount - 1, 3) = IIf(item(3) <= 0, "SIN STOCK", item(3))
+'
+'        Me.lstNombre.AddItem item(1)
+'    Next item
+'
+'    Exit Sub
+'ErrorHandler:
+'    MsgBox "Error: " & Err.Description
+'End Sub
+
+Sub CargarTodosProductos()
+    Me.lstProductos.Clear
+    Me.lstNombre.Clear
+    Me.txtValorUnd.Text = ""
+    
+    ' Configurar columnas
+    Me.lstProductos.ColumnCount = 4
+    Me.lstProductos.ColumnWidths = "70;300;70;40"
+    
+    Dim fila As Long
+    For fila = 3 To wsProductos.Cells(wsProductos.Rows.Count, "A").End(xlUp).Row
+        Me.lstProductos.AddItem
+        Me.lstProductos.List(Me.lstProductos.ListCount - 1, 0) = wsProductos.Cells(fila, 1).Value
+        Me.lstProductos.List(Me.lstProductos.ListCount - 1, 1) = wsProductos.Cells(fila, 2).Value
+        Me.lstProductos.List(Me.lstProductos.ListCount - 1, 2) = Format(wsProductos.Cells(fila, 6).Value, "#,##0.00")
+        
+        ' AGREGAR ESTA PARTE:
+        Dim existencia As Long
+        existencia = wsProductos.Cells(fila, 5).Value
+        If existencia <= 0 Then
+            Me.lstProductos.List(Me.lstProductos.ListCount - 1, 3) = "SIN STOCK"
+        Else
+            Me.lstProductos.List(Me.lstProductos.ListCount - 1, 3) = existencia
+        End If
+        
+        Me.lstNombre.AddItem wsProductos.Cells(fila, 2).Value
+    Next fila
+End Sub
+
+' EVENTO PARA CUANDO SE SELECCIONA EN lstNombre
+Private Sub lstNombre_Click()
+    On Error GoTo ErrorHandler
+    
+    If Me.lstNombre.ListIndex >= 0 Then
+        ' Sincronizar selección con lstProductos
+        Me.lstProductos.ListIndex = Me.lstNombre.ListIndex
+        
+        ' Mostrar valor unitario del producto seleccionado
+        If Me.lstProductos.ListIndex >= 0 Then
+            Me.txtValorUnd.Text = Me.lstProductos.List(Me.lstProductos.ListIndex, 2)
+        End If
+    End If
+    
+    Exit Sub
+    
+ErrorHandler:
+    ' Si hay error al seleccionar, simplemente no hacer nada
+End Sub
+
+
+' EVENTO PARA CUANDO SE SELECCIONA EN lstProductos
+' REEMPLAZAR el evento lstProductos_Click con este código:
+Private Sub lstProductos_Click()
+    On Error Resume Next ' Ignorar errores temporalmente
+    
+    If Me.lstProductos.ListIndex >= 0 Then
+        ' Solo sincronizar si lstNombre está visible y tiene elementos
+        If Me.lstNombre.Visible = True Then
+            If Me.lstNombre.ListCount > Me.lstProductos.ListIndex Then
+                Me.lstNombre.ListIndex = Me.lstProductos.ListIndex
+            End If
+        End If
+        
+        ' Mostrar valor unitario si el control existe
+        If Not Me.txtValorUnd Is Nothing Then
+            Me.txtValorUnd.Text = Me.lstProductos.List(Me.lstProductos.ListIndex, 2)
+        End If
+    End If
+    
+    On Error GoTo 0 ' Restaurar manejo de errores
+End Sub
+
+Private Sub btnAgregar_Click()
+    Call AgregarProductoAVenta
+    Me.txtBuscar.Text = ""
+    Me.txtBuscar.SetFocus
+End Sub
+
+Sub AgregarProductoAVenta()
+    On Error GoTo ErrorHandler
+    
+    ' Verificar que se haya seleccionado un producto
+    If Me.lstProductos.ListIndex = -1 Then
+        MsgBox "Por favor seleccione un producto de la lista", vbExclamation
+        Exit Sub
+    End If
+    
+       
+    ' Obtener y validar cantidad
+    Dim cantidad As Integer
+    cantidad = Val(Me.txtCantidad.Text)
+    
+    If cantidad <= 0 Then
+        MsgBox "Ingrese una cantidad válida", vbExclamation
+        Me.txtCantidad.SetFocus
+        Exit Sub
+    End If
+    
+    ' Obtener existencia
+    Dim existencia As Integer
+    existencia = Val(Me.lstProductos.List(Me.lstProductos.ListIndex, 3))
+    
+    ' === NUEVA LÓGICA PARA PRODUCTOS SIN STOCK ===
+    If existencia <= 0 Then
+        Dim respuesta As VbMsgBoxResult
+        respuesta = MsgBox("!!!PRODUCTO SIN STOCK DISPONIBLE" & vbCrLf & vbCrLf & _
+                          "¿Desea venderlo de todos modos?", _
+                          vbYesNo + vbExclamation, "Sin Stock")
+        
+        If respuesta = vbNo Then
+            Exit Sub
+        End If
+    ElseIf cantidad > existencia Then
+        MsgBox "Stock insuficiente. Existencia disponible: " & existencia, vbExclamation
+        Exit Sub
+    End If
+    
+    ' Obtener datos del producto
+    Dim codigo As String
+    Dim descripcion As String
+    Dim precio As Double
+    codigo = Me.lstProductos.List(Me.lstProductos.ListIndex, 0)
+    descripcion = Me.lstProductos.List(Me.lstProductos.ListIndex, 1)
+    
+    
+     ' En AgregarProductoAVenta, después de seleccionar el producto, agregar:
+    ' En AgregarProductoAVenta, modifica esta parte:
+    If ModoInventario Then
+        Dim verificar As VbMsgBoxResult
+        verificar = MsgBox("¿Verificar inventario físico de:" & vbCrLf & _
+                          descripcion & "?", vbYesNo + vbQuestion, "Modo Inventario")
+        
+        If verificar = vbYes Then
+            ' Guardar el índice seleccionado antes de actualizar
+            Dim indiceGuardado As Integer
+            indiceGuardado = Me.lstProductos.ListIndex
+            
+            Call ActualizarInventarioRapido
+            
+            ' Restaurar la selección
+            If Me.lstProductos.ListCount > indiceGuardado Then
+                Me.lstProductos.ListIndex = indiceGuardado
+            End If
+        End If
+    End If
+    
+    ' IMPORTANTE: Obtener precio correctamente de la columna 2
+    Dim precioTexto As String
+    precioTexto = Me.lstProductos.List(Me.lstProductos.ListIndex, 2)
+    ' Limpiar formato: quitar $, puntos de miles y cambiar coma por punto
+    precioTexto = Replace(precioTexto, "$", "")
+    precioTexto = Replace(precioTexto, ".", "")  ' Quitar separador de miles
+    precioTexto = Replace(precioTexto, ",", ".")  ' Cambiar coma decimal por punto
+    precio = Val(precioTexto)
+    
+    ' Verificar si el producto ya está en la venta
+    Dim i As Integer
+    For i = 0 To Me.lstVenta.ListCount - 1
+        If Me.lstVenta.List(i, 0) = codigo Then
+            ' Actualizar cantidad existente
+            Dim nuevaCantidad As Integer
+            nuevaCantidad = Val(Me.lstVenta.List(i, 2)) + cantidad
+            Me.lstVenta.List(i, 2) = nuevaCantidad
+            Me.lstVenta.List(i, 3) = Format(precio * nuevaCantidad, "$#,##0")
+            Call CalcularTotal
+            Me.txtCantidad.Text = "1"
+            Exit Sub
+        End If
+    Next i
+    
+    ' Agregar nuevo producto a la venta
+    Me.lstVenta.AddItem
+    Dim nuevaFila As Integer
+    nuevaFila = Me.lstVenta.ListCount - 1
+    
+    Me.lstVenta.List(nuevaFila, 0) = codigo
+    Me.lstVenta.List(nuevaFila, 1) = descripcion
+    Me.lstVenta.List(nuevaFila, 2) = cantidad
+    Me.lstVenta.List(nuevaFila, 3) = Format(precio * cantidad, "$#,##0")
+    
+    ' Si es sin stock, marcar visualmente
+    If existencia <= 0 Then
+        Me.lstVenta.List(nuevaFila, 1) = descripcion & " [SIN STOCK]"
+    End If
+    
+    ' Calcular total y limpiar
+    Call CalcularTotal
+    Me.txtCantidad.Text = "1"
+    Me.txtBuscar.SetFocus
+    
+    Exit Sub
+ErrorHandler:
+    MsgBox "Error agregando producto: " & Err.Description, vbCritical
+End Sub
+
+Private Sub btnEliminar_Click()
+    Call EliminarProductoVenta
+End Sub
+
+Sub EliminarProductoVenta()
+    On Error GoTo ErrorHandler
+    
+    If Me.lstVenta.ListIndex = -1 Then
+        MsgBox "Seleccione un producto de la venta para eliminar", vbExclamation
+        Exit Sub
+    End If
+    
+    ' Eliminar la fila seleccionada
+    Me.lstVenta.RemoveItem Me.lstVenta.ListIndex
+    Call CalcularTotal
+    
+    Exit Sub
+    
+ErrorHandler:
+    MsgBox "Error eliminando producto: " & Err.Description, vbCritical
+End Sub
+
+Sub CalcularTotal()
+    On Error GoTo ErrorHandler
+    
+    Dim total As Double
+    Dim i As Integer
+    
+    total = 0
+    For i = 0 To Me.lstVenta.ListCount - 1
+        Dim montoTexto As String
+        montoTexto = Me.lstVenta.List(i, 3)
+        ' Limpiar formato
+        montoTexto = Replace(montoTexto, "$", "")
+        montoTexto = Replace(montoTexto, ".", "")  ' Quitar separador de miles
+        montoTexto = Replace(montoTexto, ",", ".")  ' Cambiar coma decimal por punto
+        total = total + Val(montoTexto)
+    Next i
+    
+    Me.lblTotal.Caption = Format(total, "$#,##0")
+    Me.lblTotal.BackColor = RGB(244, 244, 48)
+    
+    Exit Sub
+ErrorHandler:
+    MsgBox "Error calculando total: " & Err.Description, vbCritical
+End Sub
+Private Sub btnFinalizar_Click()
+    Call FinalizarVentaCompleta
+End Sub
+
+Sub FinalizarVentaCompleta()
+    Dim t As Double: t = TNow
+    On Error GoTo EH
+    SpeedOn
+
+
+    On Error GoTo ErrorHandler
+    
+    ' Verificar que haya productos en la venta
+    If Me.lstVenta.ListCount = 0 Then
+        MsgBox "No hay productos en la venta", vbExclamation
+        Exit Sub
+    End If
+    
+    ' Obtener cliente
+    Dim cliente As String
+    If Me.cmbCliente.ListIndex >= 0 Then
+        cliente = Me.cmbCliente.List(Me.cmbCliente.ListIndex)
+    Else
+        cliente = "CONSUMIDOR FINAL"
+    End If
+    
+    ' Registrar venta en la hoja
+    Dim filaVenta As Long
+    filaVenta = wsVentas.Cells(wsVentas.Rows.Count, "A").End(xlUp).Row + 1
+    
+    ' Guardar el número de venta actual antes de incrementar
+    Dim numeroVentaActual As Long
+    numeroVentaActual = numeroVenta
+    
+    ' Registrar cada producto de la venta
+Dim i As Integer
+For i = 0 To Me.lstVenta.ListCount - 1
+    With wsVentas
+        .Cells(filaVenta, 1).Value = Date
+        .Cells(filaVenta, 2).Value = Time
+        .Cells(filaVenta, 3).Value = numeroVentaActual
+        .Cells(filaVenta, 4).Value = cliente
+        .Cells(filaVenta, 5).Value = Me.lstVenta.List(i, 0) ' Código
+        .Cells(filaVenta, 6).Value = Replace(Me.lstVenta.List(i, 1), " [SIN STOCK]", "") ' Quitar marca
+        
+        ' CORREGIR PRECIO UNITARIO
+        Dim precioUnitario As Double
+        Dim subtotalTexto As String
+        subtotalTexto = Me.lstVenta.List(i, 3)
+        subtotalTexto = Replace(subtotalTexto, "$", "")
+        subtotalTexto = Replace(subtotalTexto, ".", "")
+        subtotalTexto = Replace(subtotalTexto, ",", ".")
+        precioUnitario = Val(subtotalTexto) / Val(Me.lstVenta.List(i, 2))
+        
+        .Cells(filaVenta, 7).Value = precioUnitario ' Precio unitario
+        .Cells(filaVenta, 8).Value = Val(Me.lstVenta.List(i, 2)) ' Cantidad
+        '.Cells(filaVenta, 9).Value = Val(subtotalTexto) ' DESCUENTO
+        .Cells(filaVenta, 9).Value = Val(subtotalTexto) ' Subtotal
+        
+        ' Columna 10 es Estado (para anulaciones)
+        ' Columna 11 (K) es Observaciones
+        If InStr(Me.lstVenta.List(i, 1), "[SIN STOCK]") > 0 Then
+            .Cells(filaVenta, 10).Value = "Revisar inventario - Vendido sin stock"
+            .Cells(filaVenta, 10).Font.Color = RGB(255, 0, 0)
+        Else
+            .Cells(filaVenta, 10).Value = "ACTIVA"
+            .Cells(filaVenta, 10).Font.Color = RGB(0, 255, 0)
+        End If
+    End With
+        
+        ' Actualizar existencia
+        Call ActualizarExistencia(Me.lstVenta.List(i, 0), Val(Me.lstVenta.List(i, 2)))
+    
+        filaVenta = filaVenta + 1
+    Next i
+    
+    ' === GUARDAR PDF AUTOMÁTICAMENTE ===
+    Call GuardarFacturaAutomatica(numeroVentaActual, cliente, Date)
+    
+    ' Mostrar mensaje de éxito (breve)
+    Dim totalVenta As Double
+    totalVenta = Val(Replace(Me.lblTotal.Caption, "$", ""))
+    
+    MsgBox "Venta FAPOS" & Format(numeroVentaActual, "00000") & " registrada" & vbCrLf & _
+           "Total: " & Me.lblTotal.Caption, vbInformation, "Venta Exitosa"
+    
+    ' Preparar para siguiente venta
+    numeroVenta = numeroVentaActual + 1
+    Call LimpiarVenta
+    Call ActualizarVentasDelDia
+    Exit Sub
+    
+ErrorHandler:
+    MsgBox "Error finalizando venta: " & Err.Description, vbCritical
+    
+OUT:
+    SpeedOff
+    Debug.Print "FinalizarCompra", Format(TNow - t, "0.000") & " s"
+    Exit Sub
+EH:
+SpeedOff:             MsgBox "Error: " & Err.Description
+    
+End Sub
+
+Sub ActualizarExistencia(codigo As String, cantidadVendida As Integer)
+    ' Obtener stock actual del cache
+    Dim producto As Variant
+    producto = modCacheGlobal.ObtenerProducto(codigo)
+    
+    If Not IsNull(producto) Then
+        Dim nuevoStock As Long
+        nuevoStock = producto(2) - cantidadVendida
+        If nuevoStock < 0 Then nuevoStock = 0
+        
+        ' Actualizar usando cache
+        Call modCacheGlobal.ActualizarStock(codigo, nuevoStock)
+    End If
+End Sub
+
+Private Sub btnLimpiar_Click()
+    Call LimpiarVenta
+End Sub
+
+Sub LimpiarVenta()
+    On Error GoTo ErrorHandler
+    
+    Me.lstVenta.Clear
+    Me.lblTotal.Caption = "$ 0.00"
+    Me.txtBuscar.Text = ""
+    Me.txtCantidad.Text = "1"
+    Call CargarProductos
+    Me.txtBuscar.SetFocus
+    
+    Exit Sub
+    
+ErrorHandler:
+    MsgBox "Error limpiando venta: " & Err.Description, vbCritical
+End Sub
+
+' ==================================================
+' DETALLES DEL HISTORIAL
+' ==================================================
+
+Private Sub lstHistorial_DblClick(ByVal Cancel As MSForms.ReturnBoolean)
+    If ModoActual = "HISTORIAL" And Me.lstHistorial.ListIndex > 0 Then
+        Call MostrarDetallesVenta
+    End If
+End Sub
+
+Sub MostrarDetallesVenta()
+    On Error GoTo ErrorHandler
+    
+    If Me.lstHistorial.ListIndex <= 0 Then Exit Sub
+    
+    Dim numeroVentaSeleccionada As Long
+    numeroVentaSeleccionada = Me.lstHistorial.List(Me.lstHistorial.ListIndex, 0)
+    
+    ' Mostrar detalles
+    Call MostrarDetallesVentaCompleto(numeroVentaSeleccionada)
+    
+    Exit Sub
+    
+ErrorHandler:
+    MsgBox "Error mostrando detalles: " & Err.Description, vbCritical
+End Sub
+
+Sub MostrarDetallesVentaCompleto(numeroVenta As Long)
+    Dim fila As Long
+    Dim detalles As String
+    Dim totalVenta As Double
+    Dim cliente As String
+    Dim fecha As String
+    Dim hora As String
+    Dim estaAnulada As Boolean
+    
+    detalles = "----------------------------------------" & vbCrLf
+    
+    ' Verificar si está anulada
+    estaAnulada = False
+    For fila = 2 To wsVentas.Cells(wsVentas.Rows.Count, "A").End(xlUp).Row
+        If wsVentas.Cells(fila, 3).Value = numeroVenta Then
+            If wsVentas.Cells(fila, 10).Value = "ANULADA" Then
+                estaAnulada = True
+                Exit For
+            End If
+        End If
+    Next fila
+    
+    If estaAnulada Then
+        detalles = detalles & "     ? FACTURA ANULADA ?" & vbCrLf
+    End If
+    
+    detalles = detalles & "          DETALLES VENTA #" & numeroVenta & vbCrLf & _
+              "----------------------------------------" & vbCrLf & vbCrLf
+    
+    totalVenta = 0
+    fila = 2
+    
+    ' Buscar la venta
+    While fila <= wsVentas.Cells(wsVentas.Rows.Count, "A").End(xlUp).Row
+        If wsVentas.Cells(fila, 3).Value = numeroVenta Then
+            ' Guardar información general
+            If cliente = "" Then
+                cliente = wsVentas.Cells(fila, 4).Value
+                fecha = Format(wsVentas.Cells(fila, 1).Value, "dd/mm/yyyy")
+                hora = Format(wsVentas.Cells(fila, 2).Value, "hh:mm:ss")
+            End If
+            
+            ' Agregar producto a detalles
+            detalles = detalles & _
+                      "• " & wsVentas.Cells(fila, 6).Value & vbCrLf & _
+                      "  Cantidad: " & wsVentas.Cells(fila, 8).Value & _
+                      "   Precio: $" & Format(wsVentas.Cells(fila, 7).Value, "#,##0.00") & _
+                      "   Subtotal: $" & Format(wsVentas.Cells(fila, 9).Value, "#,##0.00") & vbCrLf & vbCrLf
+            
+            totalVenta = totalVenta + wsVentas.Cells(fila, 9).Value
+        End If
+        fila = fila + 1
+    Wend
+    
+    ' Agregar información general
+    detalles = "Cliente: " & cliente & vbCrLf & _
+              "Fecha: " & fecha & "   Hora: " & hora & vbCrLf & _
+              "----------------------------------------" & vbCrLf & vbCrLf & _
+              detalles & _
+              "----------------------------------------" & vbCrLf
+    
+    If estaAnulada Then
+        detalles = detalles & "FACTURA ANULADA - TOTAL: $0.00" & vbCrLf
+    Else
+        detalles = detalles & "TOTAL VENTA: $" & Format(totalVenta, "#,##0.00") & vbCrLf
+    End If
+    
+    detalles = detalles & "----------------------------------------"
+    
+    ' Mostrar detalles
+    MsgBox detalles, vbInformation, "Detalles - Venta #" & numeroVenta & IIf(estaAnulada, " [ANULADA]", "")
+End Sub
+
+' ==================================================
+' NUEVOS BOTONES - FUNCIONALIDADES
+' ==================================================
+
+' 1. MÓDULO DE COMPRAS
+Private Sub btnCompras_Click()
+Dim frm As Object
+    Dim estaAbierto As Boolean
+    
+    estaAbierto = False
+    For Each frm In VBA.UserForms
+        If frm.Name = "frmCompras" Then
+            estaAbierto = True
+            Exit For
+        End If
+    Next frm
+    
+    If estaAbierto Then
+        ' Si ya está abierto, solo traerlo al frente
+        frmCompras.Show
+    Else
+        ' Si no está abierto, abrirlo nuevo
+        frmCompras.Show vbModeless
+    End If
+End Sub
+
+' 2. AGREGAR PROVEEDOR
+Private Sub btnProveedor_Click()
+    Call AgregarNuevoProveedor
+End Sub
+
+Sub AgregarNuevoProveedor()
+    Dim nombre As String
+    
+    nombre = InputBox("Nombre del proveedor:", "Nuevo Proveedor")
+    If nombre = "" Then Exit Sub
+    
+    ' Verificar si existe hoja Proveedores
+    On Error Resume Next
+    If wsProveedores Is Nothing Then
+        Set wsProveedores = ThisWorkbook.Sheets.Add
+        wsProveedores.Name = "Proveedores"
+        ' Crear encabezados
+        wsProveedores.Cells(1, 1).Value = "ID"
+        wsProveedores.Cells(1, 2).Value = "Nombre"
+        wsProveedores.Cells(1, 3).Value = "Fecha Registro"
+    End If
+    On Error GoTo 0
+    
+    Dim nuevaFila As Long
+    nuevaFila = wsProveedores.Cells(wsProveedores.Rows.Count, "A").End(xlUp).Row + 1
+    
+    wsProveedores.Cells(nuevaFila, 1).Value = nuevaFila - 1
+    wsProveedores.Cells(nuevaFila, 2).Value = nombre
+    wsProveedores.Cells(nuevaFila, 3).Value = Date
+    
+    MsgBox "Proveedor agregado exitosamente", vbInformation
+End Sub
+
+' 3. AGREGAR CLIENTE
+Private Sub btnAddClientes_Click()
+    Call AgregarNuevoCliente
+End Sub
+
+Sub AgregarNuevoCliente()
+    Dim nombre As String
+    
+    nombre = InputBox("Nombre del cliente:", "Nuevo Cliente")
+    If nombre = "" Then Exit Sub
+    
+    Dim nuevaFila As Long
+    nuevaFila = wsClientes.Cells(wsClientes.Rows.Count, "A").End(xlUp).Row + 1
+    
+    wsClientes.Cells(nuevaFila, 1).Value = nuevaFila - 1
+    wsClientes.Cells(nuevaFila, 2).Value = nombre
+    wsClientes.Cells(nuevaFila, 3).Value = Date
+    
+    ' Actualizar combobox
+    Call CargarClientes
+    
+    MsgBox "Cliente agregado exitosamente", vbInformation
+End Sub
+
+
+
+
+
+Sub CancelarVentaActual()
+    If Me.lstVenta.ListCount = 0 Then
+        MsgBox "No hay productos en la venta para cancelar", vbInformation
+        Exit Sub
+    End If
+    
+    Dim respuesta As Integer
+    respuesta = MsgBox("¿Está seguro de CANCELAR esta venta?" & vbCrLf & _
+                      "Se eliminarán " & Me.lstVenta.ListCount & " productos de la venta actual.", _
+                      vbYesNo + vbQuestion, "Confirmar Cancelación")
+    
+    If respuesta = vbYes Then
+        Call LimpiarVenta
+        MsgBox "Venta cancelada exitosamente", vbInformation
+    End If
+End Sub
+
+' 5. AJUSTES DE INVENTARIO
+Private Sub btnAjustesINV_Click()
+'    MsgBox "Ajustes de Inventario - ¿ACTUALIZAR INVENTARIO?", vbYesNoCancel
+    frmAjusteInventario.Show vbModal
+    
+    
+End Sub
+
+' 6. IMPRIMIR TIRILLA
+' REEMPLAZAR completamente las funciones de impresión:
+Private Sub btnImprimir_Click()
+    If ModoActual = "HISTORIAL" Then
+        Call ImprimirFacturaHistorial
+    Else
+        MsgBox "La impresión solo está disponible en el modo Historial", vbExclamation
+    End If
+End Sub
+
+' REEMPLAZAR COMPLETAMENTE Sub ImprimirFacturaHistorial:
+Sub ImprimirFacturaHistorial()
+    On Error GoTo ErrorHandler
+    
+    ' Verificar selección
+    If Me.lstHistorial.ListIndex <= 0 Then
+        MsgBox "Seleccione una venta del historial para imprimir", vbExclamation
+        Exit Sub
+    End If
+    
+    Dim numeroVentaSeleccionada As Long
+    numeroVentaSeleccionada = Val(Me.lstHistorial.List(Me.lstHistorial.ListIndex, 0))
+    
+    ' Deshabilitar actualizaciones temporalmente
+    Application.ScreenUpdating = False
+    
+    ' Crear hoja temporal
+    Dim wsTemp As Worksheet
+    Set wsTemp = ThisWorkbook.Sheets.Add
+    wsTemp.Name = "Factura_" & numeroVentaSeleccionada
+    
+    ' Generar contenido
+    GenerarFacturaTirilla wsTemp, numeroVentaSeleccionada
+    
+    ' Reactivar actualizaciones
+    Application.ScreenUpdating = True
+    
+    ' Mostrar la hoja al usuario
+    wsTemp.Activate
+    wsTemp.Range("A1").Select
+    
+    ' Opciones para el usuario
+    Dim opcion As Integer
+    opcion = MsgBox("Factura #" & numeroVentaSeleccionada & " generada." & vbCrLf & vbCrLf & _
+                    "¿Qué desea hacer?" & vbCrLf & vbCrLf & _
+                    "Sí = Imprimir ahora" & vbCrLf & _
+                    "No = Solo ver (imprimir manualmente con Ctrl+P)" & vbCrLf & _
+                    "Cancelar = Eliminar factura", _
+                    vbYesNoCancel + vbQuestion, "Opciones de Factura")
+    
+    Select Case opcion
+        Case vbYes
+            ' Imprimir directamente SIN vista previa
+            On Error Resume Next
+            wsTemp.PrintOut
+            If Err.Number <> 0 Then
+                MsgBox "No se pudo imprimir automáticamente." & vbCrLf & _
+                      "Use Ctrl+P para imprimir manualmente.", vbExclamation
+            Else
+                MsgBox "Factura enviada a la impresora", vbInformation
+'                wsTemp.Delete
+            End If
+            On Error GoTo ErrorHandler
+            
+        Case vbNo
+            ' Mantener visible
+            MsgBox "Puede imprimir con Ctrl+P cuando desee", vbInformation
+            Exit Sub
+            
+        Case vbCancel
+            ' Eliminar
+    End Select
+    
+    ' Preguntar si eliminar
+    If MsgBox("¿Eliminar la hoja de factura?", vbYesNo + vbQuestion) = vbYes Then
+        Application.DisplayAlerts = False
+        wsTemp.Delete
+        Application.DisplayAlerts = True
+    End If
+    
+    Exit Sub
+    
+ErrorHandler:
+    Application.ScreenUpdating = True
+    MsgBox "Error: " & Err.Description & vbCrLf & _
+           "Puede imprimir manualmente con Ctrl+P", vbExclamation
+End Sub
+
+' VERSIÓN SIMPLIFICADA para evitar bloqueos:
+Sub GenerarFacturaSimple(ws As Worksheet, numeroVenta As Long)
+    On Error Resume Next
+    
+    Dim fila As Long, filaFactura As Long
+    Dim totalVenta As Double
+    Dim cliente As String, fecha As String
+    
+    ' Buscar datos básicos (sin bucles complejos)
+    For fila = 2 To wsVentas.Cells(wsVentas.Rows.Count, "A").End(xlUp).Row
+        If wsVentas.Cells(fila, 3).Value = numeroVenta Then
+            cliente = wsVentas.Cells(fila, 4).Value
+            fecha = Format(wsVentas.Cells(fila, 1).Value, "dd/mm/yyyy")
+            Exit For
+        End If
+    Next fila
+    
+    ' Encabezado simple
+    ws.Cells(1, 1).Value = "FACTURA DE VENTA"
+    ws.Cells(2, 1).Value = "Factura #: " & numeroVenta
+    ws.Cells(3, 1).Value = "Fecha: " & fecha
+    ws.Cells(4, 1).Value = "Cliente: " & cliente
+    ws.Cells(5, 1).Value = "================================"
+    
+    ' Productos
+    ws.Cells(6, 1).Value = "Producto"
+    ws.Cells(6, 2).Value = "Cant"
+    ws.Cells(6, 3).Value = "Precio"
+    ws.Cells(6, 4).Value = "Total"
+    
+    filaFactura = 7
+    totalVenta = 0
+    
+    ' Agregar productos (con límite para evitar bucles infinitos)
+    Dim contador As Integer
+    contador = 0
+    
+    For fila = 2 To wsVentas.Cells(wsVentas.Rows.Count, "A").End(xlUp).Row
+        If contador > 100 Then Exit For ' Límite de seguridad
+        
+        If wsVentas.Cells(fila, 3).Value = numeroVenta Then
+            ws.Cells(filaFactura, 1).Value = Left(wsVentas.Cells(fila, 6).Value, 30)
+            ws.Cells(filaFactura, 2).Value = wsVentas.Cells(fila, 8).Value
+            ws.Cells(filaFactura, 3).Value = Format(wsVentas.Cells(fila, 7).Value, "$#,##0")
+            ws.Cells(filaFactura, 4).Value = Format(wsVentas.Cells(fila, 9).Value, "$#,##0")
+            
+            totalVenta = totalVenta + wsVentas.Cells(fila, 9).Value
+            filaFactura = filaFactura + 1
+            contador = contador + 1
+        End If
+    Next fila
+    
+    ' Total
+    ws.Cells(filaFactura, 1).Value = "================================"
+    ws.Cells(filaFactura + 1, 1).Value = "TOTAL:"
+    ws.Cells(filaFactura + 1, 4).Value = Format(totalVenta, "$#,##0")
+    
+    ' Formato básico
+    ws.Columns("A:A").ColumnWidth = 20 'OJOOO
+    ws.Columns("B:D").ColumnWidth = 12 'OJO
+    
+    On Error GoTo 0
+End Sub
+
+Sub GenerarFacturaTirilla(ws As Worksheet, numeroVenta As Long)
+    On Error Resume Next
+    
+    Dim fila As Long, filaFactura As Long
+    Dim totalVenta As Double
+    Dim cliente As String, fecha As String, hora As String
+    Dim nitCliente As String
+    
+        
+    ' Limpiar hoja
+    ws.Cells.Clear
+    
+    ' Buscar datos de la venta
+    For fila = 2 To wsVentas.Cells(wsVentas.Rows.Count, "A").End(xlUp).Row
+        If wsVentas.Cells(fila, 3).Value = numeroVenta Then
+            cliente = wsVentas.Cells(fila, 4).Value
+            fecha = Format(wsVentas.Cells(fila, 1).Value, "dd/mm/yyyy")
+            hora = Format(wsVentas.Cells(fila, 2).Value, "hh:mm:ss")
+            
+'            ' Buscar el NIT en la hoja Clientes
+'            Dim wsClientes As Worksheet
+'            Set wsClientes = ThisWorkbook.Sheets("Clientes")
+'            Dim nitCliente As String
+'            On Error Resume Next
+'                nitCliente = Application.WorksheetFunction.VLookup(cliente, wsClientes.Range("A:B"), 2, False)
+'            On Error GoTo 0
+'            If nitCliente = "" Then nitCliente = "NIT NO ENCONTRADO"
+            
+            Exit For
+        End If
+    Next fila
+    
+    ' ANTES de escribir cualquier valor, configurar TODA la hoja como TEXTO
+    ws.Cells.NumberFormat = "@"  ' @ = formato texto
+    
+    ' CONFIGURACIÓN PARA 80MM
+    ' Solo usar columna A para todo el contenido
+    ws.Columns("A:A").ColumnWidth = 48  ' Ancho único para 80mm
+    ws.Cells.Font.Name = "Courier New"  ' Fuente monoespaciada
+    ws.Cells.Font.Size = 9
+    
+    ' === ENCABEZADO EMPRESA ===
+'    filaFactura = 1
+'    ws.Cells(filaFactura, 1).Value = " CONSUELO RESTREPO PULGARIN"
+'    ws.Cells(filaFactura, 1).Font.Bold = True
+'    ws.Cells(filaFactura, 1).Font.Size = 11
+    
+    filaFactura = 1
+    ws.Cells(filaFactura, 1).Value = "        METROPHARMA LA 80"
+    ws.Cells(filaFactura, 1).Font.Bold = True
+    ws.Cells(filaFactura, 1).Font.Size = 11
+    
+        
+    filaFactura = filaFactura + 1
+    ws.Cells(filaFactura, 1).Value = "         NIT: 21.401.990"
+    
+    filaFactura = filaFactura + 1
+    ws.Cells(filaFactura, 1).Value = "    CR 80 53 A 16 Los Colores"
+    
+    filaFactura = filaFactura + 1
+    ws.Cells(filaFactura, 1).Value = "       Tel: 319 3790165"
+    
+    filaFactura = filaFactura + 1
+    ws.Cells(filaFactura, 1).Value = "================================"
+    
+    ' === INFO FACTURA ===
+    filaFactura = filaFactura + 1
+    ws.Cells(filaFactura, 1).Value = "Factura: FAPOS" & Format(numeroVenta, "00000")
+    ws.Cells(filaFactura, 1).Font.Bold = True
+    
+    filaFactura = filaFactura + 1
+    ws.Cells(filaFactura, 1).Value = "Fecha: " & fecha & " " & hora
+    
+    filaFactura = filaFactura + 1
+    ws.Cells(filaFactura, 1).Value = "Cliente: " & Left(cliente, 25)
+    'PEPPONCIO
+    filaFactura = filaFactura + 1
+'    ws.Cells(filaFactura, 1).Value = "NIT/ID: " & Left(nitCliente, 25)
+    ws.Cells(filaFactura, 1).Value = "NIT/ID: 222.222.222"
+    
+    filaFactura = filaFactura + 1
+    ws.Cells(filaFactura, 1).Value = "================================"
+    
+    ' === PRODUCTOS ===
+    filaFactura = filaFactura + 1
+    ws.Cells(filaFactura, 1).Value = "CANT  PRODUCTO"
+    ws.Cells(filaFactura, 1).Font.Bold = True
+    
+    filaFactura = filaFactura + 1
+    ws.Cells(filaFactura, 1).Value = "      P.UNIT        SUBTOTAL"
+    ws.Cells(filaFactura, 1).Font.Bold = True
+    
+    filaFactura = filaFactura + 1
+    ws.Cells(filaFactura, 1).Value = "--------------------------------"
+    
+    ' Listar productos
+    totalVenta = 0
+    For fila = 2 To wsVentas.Cells(wsVentas.Rows.Count, "A").End(xlUp).Row
+        If wsVentas.Cells(fila, 3).Value = numeroVenta Then
+            Dim nombreProd As String
+            Dim cant As Integer
+            Dim precioUnit As Double
+            Dim subtotal As Double
+            
+            nombreProd = Left(wsVentas.Cells(fila, 6).Value, 28)
+            cant = wsVentas.Cells(fila, 8).Value
+            precioUnit = wsVentas.Cells(fila, 7).Value
+            subtotal = wsVentas.Cells(fila, 9).Value
+            
+            ' Línea 1: Cantidad y producto
+            filaFactura = filaFactura + 1
+            ws.Cells(filaFactura, 1).Value = Format(cant, "00") & "  " & nombreProd
+            
+            ' Línea 2: Precios
+            filaFactura = filaFactura + 1
+            ws.Cells(filaFactura, 1).Value = "    $" & Format(precioUnit, "#,##0") & _
+                                              "      $" & Format(subtotal, "#,##0")
+            
+            totalVenta = totalVenta + subtotal
+        End If
+    Next fila
+    
+    ' === TOTAL ===
+    filaFactura = filaFactura + 1
+    ws.Cells(filaFactura, 1).Value = "================================"
+    
+    filaFactura = filaFactura + 1
+    ws.Cells(filaFactura, 1).Value = "TOTAL:           $" & Format(totalVenta, "#,##0")
+    ws.Cells(filaFactura, 1).Font.Bold = True
+    ws.Cells(filaFactura, 1).Font.Size = 11
+    
+    filaFactura = filaFactura + 1
+    ws.Cells(filaFactura, 1).Value = "================================"
+    
+    ' === PIE ===
+    filaFactura = filaFactura + 1
+    ws.Cells(filaFactura, 1).Value = "PERSONA NATURAL NO RESPONSABLE DE IVA"
+    ws.Cells(filaFactura, 1).Font.Size = 7
+'    ws.Cells(filaFactura, 1).HorizontalAlignment = xlCenter
+    
+    
+    filaFactura = filaFactura + 1
+    ws.Cells(filaFactura, 1).Value = "SUJETO NO OBLIGADO A EXPEDIR FACTURA"
+    ws.Cells(filaFactura, 1).Font.Size = 7
+'    ws.Cells(filaFactura, 1).HorizontalAlignment = xlCenter
+    
+    filaFactura = filaFactura + 1
+    ws.Cells(filaFactura, 1).Value = "ELECTRÓNICA NI DOCUMENTO EQUIVALENTE"
+'    ws.Cells(filaFactura, 1).Value = "RESOLUCION NUMERO 000165 DEL 01 NOVIEMBRE 2023"
+    ws.Cells(filaFactura, 1).Font.Size = 7
+''    ws.Cells(filaFactura, 1).HorizontalAlignment = xlCenter
+'
+    filaFactura = filaFactura + 1
+    ws.Cells(filaFactura, 1).Value = "RESOLUCIÓN NÚMERO 000165"
+    ws.Cells(filaFactura, 1).Font.Size = 7
+'''    ws.Cells(filaFactura, 1).HorizontalAlignment = xlCenter
+'
+    filaFactura = filaFactura + 1
+    ws.Cells(filaFactura, 1).Value = "DEL 01 NOVIEMBRE 2023"
+    ws.Cells(filaFactura, 1).Font.Size = 7
+''    ws.Cells(filaFactura, 1).HorizontalAlignment = xlCenter
+    
+    filaFactura = filaFactura + 1
+    ws.Cells(filaFactura, 1).Value = " ¡Gracias por su compra!"
+    ws.Cells(filaFactura, 1).Font.Italic = True
+'    ws.Cells(filaFactura, 1).HorizontalAlignment = xlCenter
+    
+    ' === CONFIGURAR PÁGINA PARA 80MM ===
+    With ws.PageSetup
+        .PrintArea = "$A$1:$A$" & filaFactura
+        
+        ' Configuración para tirilla 80mm
+        .PaperSize = xlPaperUser
+        .Orientation = xlPortrait
+        
+'        ' Márgenes mínimos (en puntos)
+'        .TopMargin = 0
+'        .BottomMargin = 0
+'        .LeftMargin = 0
+'        .RightMargin = 0
+'        .HeaderMargin = 0
+'        .FooterMargin = 0
+
+        ' Márgenes mínimos
+        .TopMargin = Application.InchesToPoints(0.1)
+        .BottomMargin = Application.InchesToPoints(0.1)
+        .LeftMargin = Application.InchesToPoints(0.1)
+        .RightMargin = Application.InchesToPoints(0.1)
+        .HeaderMargin = 0
+        .FooterMargin = 0
+        
+        
+        
+        
+'        ' No ajustar a página
+'        .Zoom = 100
+'        .FitToPagesWide = False
+'        .FitToPagesTall = False
+        ' Ajustar a página
+        .Zoom = False
+        .FitToPagesWide = 1
+        .FitToPagesTall = False
+        
+        
+        
+        ' Centrar contenido
+        .CenterHorizontally = True
+        .CenterVertically = False
+    End With
+    
+    On Error GoTo 0
+End Sub
+Sub GenerarFacturaHistorial(ws As Worksheet, numeroVenta As Long)
+    Dim fila As Long
+    Dim totalVenta As Double
+    Dim cliente As String
+    Dim fecha As String
+    Dim hora As String
+    
+    ' Buscar información general de la venta
+    fila = 2
+    totalVenta = 0
+    
+    While fila <= wsVentas.Cells(wsVentas.Rows.Count, "A").End(xlUp).Row
+        If wsVentas.Cells(fila, 3).Value = numeroVenta Then
+            ' Guardar información general
+            If cliente = "" Then
+                cliente = wsVentas.Cells(fila, 4).Value
+                fecha = Format(wsVentas.Cells(fila, 1).Value, "dd/mm/yyyy")
+                hora = Format(wsVentas.Cells(fila, 2).Value, "hh:mm:ss")
+            End If
+            fila = fila + 1
+        Else
+            fila = fila + 1
+        End If
+    Wend
+    
+    
+    With ws
+        ' Encabezado de la factura
+        .Range("A1").Value = "FACTURA DE VENTA"
+        .Range("A1").Font.Bold = True
+        .Range("A1").Font.Size = 16
+        
+        .Range("A2").Value = "No: " & numeroVenta
+        .Range("A3").Value = "Fecha: " & fecha
+        .Range("A4").Value = "Hora: " & hora
+        .Range("A5").Value = "Cliente: " & cliente
+        .Range("A6").Value = "================================================"
+        
+        ' Encabezados de productos
+        .Range("A7").Value = "Producto"
+        .Range("B7").Value = "Cant"
+        .Range("C7").Value = "Precio Unitario"
+        .Range("D7").Value = "Subtotal"
+        .Range("A7:D7").Font.Bold = True
+        
+        ' Agregar productos
+        fila = 8
+        totalVenta = 0
+        
+        Dim filaVenta As Long
+        filaVenta = 2
+        
+        While filaVenta <= wsVentas.Cells(wsVentas.Rows.Count, "A").End(xlUp).Row
+            If wsVentas.Cells(filaVenta, 3).Value = numeroVenta Then
+                .Cells(fila, 1).Value = wsVentas.Cells(filaVenta, 6).Value
+                .Cells(fila, 2).Value = wsVentas.Cells(filaVenta, 8).Value
+                .Cells(fila, 3).Value = Format(wsVentas.Cells(filaVenta, 7).Value, "$#,##0.00")
+                .Cells(fila, 4).Value = Format(wsVentas.Cells(filaVenta, 9).Value, "$#,##0.00")
+                
+                totalVenta = totalVenta + wsVentas.Cells(filaVenta, 9).Value
+                fila = fila + 1
+            End If
+            filaVenta = filaVenta + 1
+        Wend
+        
+        ' Total
+        .Cells(fila, 1).Value = "================================================"
+        .Cells(fila + 1, 1).Value = "TOTAL:"
+        .Cells(fila + 1, 4).Value = Format(totalVenta, "$#,##0.00")
+        .Cells(fila + 1, 1).Font.Bold = True
+        .Cells(fila + 1, 4).Font.Bold = True
+        
+        .Cells(fila + 3, 1).Value = "¡Gracias por su compra!"
+        
+        ' Ajustar formato
+        .Columns("A:A").ColumnWidth = 35
+        .Columns("B:B").ColumnWidth = 8
+        .Columns("C:D").ColumnWidth = 15
+        
+        ' Centrar columnas
+        .Columns("B:B").HorizontalAlignment = xlCenter
+        .Columns("C:C").HorizontalAlignment = xlRight
+        .Columns("D:D").HorizontalAlignment = xlRight
+    End With
+End Sub
+
+
+
+
+
+' 8. ANULAR FACTURA (Visible solo en historial)
+Private Sub btnAnular_Click()
+    If ModoActual = "HISTORIAL" Then
+        Call AnularFactura
+    Else
+        MsgBox "Esta función solo está disponible en el modo Historial", vbExclamation
+    End If
+End Sub
+
+Sub AnularFactura()
+    If Me.lstHistorial.ListIndex <= 0 Then
+        MsgBox "Seleccione una venta del historial para anular", vbExclamation
+        Exit Sub
+    End If
+    
+    ' Verificar si ya está anulada mirando la columna 1 (Estado)
+    If Me.lstHistorial.List(Me.lstHistorial.ListIndex, 1) = "** ANULADA **" Then
+        MsgBox "Esta factura ya fue ANULADA anteriormente." & vbCrLf & _
+               "No se puede anular dos veces.", vbExclamation, "Factura ya anulada"
+        Exit Sub
+    End If
+    
+    Dim numeroVentaAnular As Long
+    numeroVentaAnular = Val(Me.lstHistorial.List(Me.lstHistorial.ListIndex, 0))
+    
+    ' Verificar doble en la hoja de ventas
+    Dim fila As Long
+    Dim yaAnulada As Boolean
+    yaAnulada = False
+    
+    For fila = 2 To wsVentas.Cells(wsVentas.Rows.Count, "A").End(xlUp).Row
+        If wsVentas.Cells(fila, 3).Value = numeroVentaAnular Then
+            If wsVentas.Cells(fila, 10).Value = "ANULADA" Then
+                yaAnulada = True
+                Exit For
+            End If
+        End If
+    Next fila
+    
+    If yaAnulada Then
+        MsgBox "Esta factura ya está anulada en el sistema.", vbExclamation
+        Exit Sub
+    End If
+    
+    ' Continuar con el proceso de anulación
+    Dim respuesta As Integer
+    respuesta = MsgBox("¿ANULAR la factura FAPOS" & Format(numeroVentaAnular, "00000") & "?" & vbCrLf & _
+                      "Se generará una NOTA CRÉDITO y se devolverán los productos al inventario." & vbCrLf & vbCrLf & _
+                      "Esta acción NO se puede deshacer.", _
+                      vbYesNo + vbCritical, "Confirmar Anulación")
+    
+    If respuesta = vbYes Then
+        ' Generar Nota Crédito PDF
+        Call GenerarNotaCredito(numeroVentaAnular)
+        
+        ' Reversar productos al inventario
+        Call ReversarInventario(numeroVentaAnular)
+        
+        ' Marcar como anulada
+        Call MarcarVentaAnulada(numeroVentaAnular)
+        
+        MsgBox "? Factura FAPOS" & Format(numeroVentaAnular, "00000") & " anulada exitosamente." & vbCrLf & _
+               "?? Nota Crédito generada y guardada." & vbCrLf & _
+               "?? Inventario actualizado.", vbInformation, "Anulación Exitosa"
+        
+        ' Recargar historial para mostrar cambios
+        Call CargarHistorialVentas
+    End If
+End Sub
+
+Sub ReversarInventario(numeroVenta As Long)
+    Dim fila As Long
+    fila = 2
+    
+    While fila <= wsVentas.Cells(wsVentas.Rows.Count, "A").End(xlUp).Row
+        If wsVentas.Cells(fila, 3).Value = numeroVenta Then
+            Dim codigo As String
+            Dim cantidad As Integer
+            
+            codigo = wsVentas.Cells(fila, 5).Value
+            cantidad = wsVentas.Cells(fila, 8).Value
+            
+            ' DEVOLVER al inventario
+            Call AgregarAlInventario(codigo, cantidad)
+            
+            fila = fila + 1
+        Else
+            fila = fila + 1
+        End If
+    Wend
+End Sub
+
+Sub AgregarAlInventario(codigo As String, cantidad As Integer)
+    Dim fila As Long
+    For fila = 3 To wsProductos.Cells(wsProductos.Rows.Count, "A").End(xlUp).Row
+        If wsProductos.Cells(fila, 1).Value = codigo Then
+            wsProductos.Cells(fila, 5).Value = wsProductos.Cells(fila, 5).Value + cantidad
+            Exit For
+        End If
+    Next fila
+End Sub
+
+Sub EliminarVentaHistorial(numeroVenta As Long)
+    Dim fila As Long
+    fila = 2
+    
+    While fila <= wsVentas.Cells(wsVentas.Rows.Count, "A").End(xlUp).Row
+        If wsVentas.Cells(fila, 3).Value = numeroVenta Then
+            wsVentas.Rows(fila).Delete
+        Else
+            fila = fila + 1
+        End If
+    Wend
+End Sub
+
+' 9. POSICIONAR EN BÚSQUEDA
+Private Sub btnPosicionar_Click()
+
+    Me.txtBuscar.SetFocus
+    Me.txtBuscar.Text = ""
+    
+End Sub
+
+' ==================================================
+' SISTEMA DE IMPRESIÓN Y PDF
+' ==================================================
+
+Sub GenerarTirillaImpression()
+    On Error GoTo ErrorHandler
+    
+    ' Crear hoja temporal para impresión
+    Dim wsTemp As Worksheet
+    Set wsTemp = ThisWorkbook.Sheets.Add
+    wsTemp.Name = "TempTirilla_" & Format(Now, "hhmmss")
+    
+    With wsTemp
+        ' Encabezado de la tirilla
+        .Range("A1").Value = "TIRILLA DE VENTA"
+        .Range("A1").Font.Bold = True
+        .Range("A1").Font.Size = 14
+        
+        .Range("A2").Value = "No: " & numeroVenta
+        .Range("A3").Value = "Fecha: " & Format(Date, "dd/mm/yyyy")
+        .Range("A4").Value = "Hora: " & Format(Time, "hh:mm:ss")
+        .Range("A5").Value = "Cliente: " & Me.cmbCliente.Text
+        .Range("A6").Value = "========================================"
+        
+        ' Encabezados de productos
+        .Range("A7").Value = "Producto"
+        .Range("B7").Value = "Cant"
+        .Range("C7").Value = "Precio"
+        .Range("D7").Value = "Subtotal"
+        .Range("A7:D7").Font.Bold = True
+        
+        ' Agregar productos
+        Dim fila As Long
+        fila = 8
+        Dim totalVenta As Double
+        totalVenta = 0
+        
+        Dim i As Integer
+        For i = 0 To Me.lstVenta.ListCount - 1
+            .Cells(fila, 1).Value = Me.lstVenta.List(i, 1)
+            .Cells(fila, 2).Value = Me.lstVenta.List(i, 2)
+            .Cells(fila, 3).Value = Format(Val(Replace(Me.lstVenta.List(i, 3), ",", "")) / Val(Me.lstVenta.List(i, 2)), "#,##0.00")
+            .Cells(fila, 4).Value = Me.lstVenta.List(i, 3)
+            
+            totalVenta = totalVenta + Val(Replace(Me.lstVenta.List(i, 3), ",", ""))
+            fila = fila + 1
+        Next i
+        
+        ' Total
+        .Cells(fila, 1).Value = "========================================"
+        .Cells(fila + 1, 1).Value = "TOTAL:"
+        .Cells(fila + 1, 4).Value = Format(totalVenta, "$#,##0.00")
+        .Cells(fila + 1, 1).Font.Bold = True
+        .Cells(fila + 1, 4).Font.Bold = True
+        
+        .Cells(fila + 3, 1).Value = "¡Gracias por su compra!"
+        
+        ' Ajustar formato
+        .Columns("A:A").ColumnWidth = 30
+        .Columns("B:B").ColumnWidth = 8
+        .Columns("C:D").ColumnWidth = 12
+        
+'        ' Ajustar formato FELIPE
+'        .Columns("A:A").ColumnWidth = 18
+'        .Columns("B:B").ColumnWidth = 10
+'        .Columns("C:D").ColumnWidth = 10
+        
+        ' Configurar página para impresión
+        With .PageSetup
+            .LeftMargin = Application.InchesToPoints(0.25)
+            .RightMargin = Application.InchesToPoints(0.25)
+            .TopMargin = Application.InchesToPoints(0.25)
+            .BottomMargin = Application.InchesToPoints(0.25)
+            .HeaderMargin = Application.InchesToPoints(0.25)
+            .FooterMargin = Application.InchesToPoints(0.25)
+            .PrintArea = "$A$1:$D$" & (fila + 3)
+        End With
+        
+        ' Imprimir
+        .PrintOut Copies:=1
+        
+        ' Esperar un momento y eliminar hoja temporal
+        Application.Wait (Now + TimeValue("0:00:02"))
+        Application.DisplayAlerts = False
+        .Delete
+        Application.DisplayAlerts = True
+    End With
+    
+    Exit Sub
+    
+ErrorHandler:
+    MsgBox "Error al imprimir: " & Err.Description, vbCritical
+    On Error Resume Next
+    Application.DisplayAlerts = False
+    wsTemp.Delete
+    Application.DisplayAlerts = True
+End Sub
+
+Sub GuardarVentaPDF()
+    On Error GoTo ErrorHandler
+    
+    ' Crear hoja temporal para PDF
+    Dim wsPDF As Worksheet
+    Set wsPDF = ThisWorkbook.Sheets.Add
+    wsPDF.Name = "TempPDF_" & Format(Now, "hhmmss")
+    
+    ' Mismo contenido que la impresión
+    Call GenerarContenidoTirilla(wsPDF)
+    
+    ' Guardar como PDF
+    Dim rutaPDF As String
+    rutaPDF = ThisWorkbook.Path & "\Venta_" & numeroVenta & "_" & Format(Now, "ddmmyy_hhmm") & ".pdf"
+    
+    wsPDF.ExportAsFixedFormat Type:=xlTypePDF, Filename:=rutaPDF, Quality:=xlQualityStandard
+    
+    ' Limpiar
+    Application.Wait (Now + TimeValue("0:00:01"))
+    Application.DisplayAlerts = False
+    wsPDF.Delete
+    Application.DisplayAlerts = True
+    
+    MsgBox "PDF guardado en: " & rutaPDF, vbInformation
+    
+    Exit Sub
+    
+ErrorHandler:
+    MsgBox "Error al guardar PDF: " & Err.Description, vbCritical
+    On Error Resume Next
+    Application.DisplayAlerts = False
+    wsPDF.Delete
+    Application.DisplayAlerts = True
+End Sub
+
+Sub GenerarContenidoTirilla(ws As Worksheet)
+    With ws
+        ' Encabezado
+        .Range("A1").Value = "TIRILLA DE VENTA"
+        .Range("A1").Font.Bold = True
+        .Range("A1").Font.Size = 14
+        
+        .Range("A2").Value = "No: " & numeroVenta
+        .Range("A3").Value = "Fecha: " & Format(Date, "dd/mm/yyyy")
+        .Range("A4").Value = "Hora: " & Format(Time, "hh:mm:ss")
+        .Range("A5").Value = "Cliente: " & Me.cmbCliente.Text
+        .Range("A6").Value = "========================================"
+        
+        ' Productos
+        .Range("A7").Value = "Producto"
+        .Range("B7").Value = "Cant"
+        .Range("C7").Value = "Precio"
+        .Range("D7").Value = "Subtotal"
+        .Range("A7:D7").Font.Bold = True
+        
+        Dim fila As Long
+        fila = 8
+        Dim totalVenta As Double
+        totalVenta = 0
+        
+        Dim i As Integer
+        For i = 0 To Me.lstVenta.ListCount - 1
+            .Cells(fila, 1).Value = Me.lstVenta.List(i, 1)
+            .Cells(fila, 2).Value = Me.lstVenta.List(i, 2)
+            .Cells(fila, 3).Value = Format(Val(Replace(Me.lstVenta.List(i, 3), ",", "")) / Val(Me.lstVenta.List(i, 2)), "#,##0.00")
+            .Cells(fila, 4).Value = Me.lstVenta.List(i, 3)
+            
+            totalVenta = totalVenta + Val(Replace(Me.lstVenta.List(i, 3), ",", ""))
+            fila = fila + 1
+        Next i
+        
+        ' Total
+        .Cells(fila, 1).Value = "========================================"
+        .Cells(fila + 1, 1).Value = "TOTAL:"
+        .Cells(fila + 1, 4).Value = Format(totalVenta, "$#,##0.00")
+        .Cells(fila + 1, 1).Font.Bold = True
+        .Cells(fila + 1, 4).Font.Bold = True
+        
+        .Cells(fila + 3, 1).Value = "¡Gracias por su compra!"
+        
+'         Formato
+        .Columns("A:A").ColumnWidth = 30
+        .Columns("B:B").ColumnWidth = 8
+        .Columns("C:D").ColumnWidth = 12
+        
+'        ' Formato FELIPE
+'        .Columns("A:A").ColumnWidth = 15
+'        .Columns("B:B").ColumnWidth = 10
+'        .Columns("C:D").ColumnWidth = 10
+        
+    End With
+End Sub
+
+' ==================================================
+' EVENTOS ADICIONALES
+' ==================================================
+
+Private Sub txtBuscar_KeyPress(ByVal KeyAscii As MSForms.ReturnInteger)
+    If KeyAscii = 13 Then ' Enter
+        PintarLista
+        KeyAscii = 0
+    End If
+End Sub
+
+Private Sub lstProductos_DblClick(ByVal Cancel As MSForms.ReturnBoolean)
+    If Me.lstProductos.ListIndex >= 0 Then
+        Call AgregarProductoAVenta
+    End If
+End Sub
+
+Private Sub txtCantidad_Enter()
+    If Me.txtCantidad.Text = "" Then
+        Me.txtCantidad.Text = "1"
+    End If
+End Sub
+
+Private Sub btnSalir_Click()
+    Unload Me
+End Sub
+
+'-------------------aqui------------
+
+Private Sub UserForm_Activate()
+'    DoEvents ' Procesar eventos pendientes
+'
+'     Intentar múltiples veces
+'    On Error Resume Next
+'    Me.txtBuscar.SetFocus
+'
+'    If Me.ActiveControl.Name <> "txtBuscar" Then
+'        Application.Wait Now + TimeValue("00:00:00")
+'        Me.txtBuscar.SetFocus
+'    End If
+'    On Error GoTo 0
+
+    On Error Resume Next
+    If InStr(1, CStr(Application.StatusBar), "StockActualizado") > 0 Then
+        Application.StatusBar = False
+        RefrescarCatalogo
+    End If
+    On Error GoTo 0
+
+    VerificarComprasAbiertas
+    
+End Sub
+Private Sub UserForm_KeyDown(ByVal KeyCode As MSForms.ReturnInteger, ByVal Shift As Integer)
+    Select Case KeyCode
+        Case vbKeyF4  ' F4 para FINALIZAR VENTA
+            Call btnFinalizar_Click
+            
+        Case vbKeyF5  ' F5 para REFRESCAR
+            Call CargarProductos
+            
+        Case vbKeyF12  ' F12 para IMPRIMIR ÚLTIMA
+            Call ImprimirUltimaFacturaDirecto
+            
+        Case vbKeyEscape  ' ESC para LIMPIAR
+            Call btnLimpiar_Click
+            
+        Case vbKeyF2  ' F2 para ir a BUSCAR
+            Me.txtBuscar.SetFocus
+            
+        Case vbKeyF3  ' F3 para ir a CANTIDAD
+            Me.txtCantidad.SetFocus
+            Me.txtCantidad.SelStart = 0
+            Me.txtCantidad.SelLength = Len(Me.txtCantidad.Text)
+    End Select
+End Sub
+'```
+'
+'## ?? **LISTA DE ATAJOS PARA DOÑA A**
+'
+'Puedes hacerle una notita y pegarla en el monitor:
+'```
+'ATAJOS DEL SISTEMA NUEVO:
+'========================
+'F2  ? Buscar producto
+'F3  ? Cambiar cantidad
+'F4  ? FINALIZAR VENTA ?
+'F5  ? Actualizar lista
+'F12 ? Imprimir última
+'ESC ? Limpiar todo
+
+
+
+Sub VerificarComprasAbiertas()
+    Dim frm As Object
+    Dim comprasAbierto As Boolean
+    
+    comprasAbierto = False
+    
+    ' Buscar si frmCompras está abierto
+    For Each frm In VBA.UserForms
+        If frm.Name = "frmCompras" Then
+            comprasAbierto = True
+            Exit For
+        End If
+    Next frm
+    
+    ' Mostrar u ocultar el botón
+    Me.btnIrCompras.Visible = comprasAbierto
+    
+    ' Opcional: cambiar el texto del botón
+    If comprasAbierto Then
+        Me.btnIrCompras.Caption = "Volver a Compras"
+        Me.btnIrCompras.BackColor = RGB(255, 255, 200) ' Color amarillo claro
+    End If
+End Sub
+
+
+'--------------hasta aqui--------------
+' Cambiar el evento del botón
+Private Sub btnGuardarPDF_Click()
+    If ModoActual = "HISTORIAL" Then
+        Call VerPDFFactura
+    End If
+End Sub
+
+Sub GuardarFacturaPDF()
+    On Error GoTo ErrorHandler
+    
+    If Me.lstHistorial.ListIndex <= 0 Then
+        MsgBox "Seleccione una venta del historial", vbExclamation
+        Exit Sub
+    End If
+    
+    Dim numeroVenta As Long
+    numeroVenta = Val(Me.lstHistorial.List(Me.lstHistorial.ListIndex, 0))
+    
+    ' Crear hoja temporal
+    Dim wsTemp As Worksheet
+    Set wsTemp = ThisWorkbook.Sheets.Add
+    
+    ' Generar factura
+    GenerarFacturaTirilla wsTemp, numeroVenta
+    
+    ' Guardar como PDF
+    Dim rutaPDF As String
+    rutaPDF = ThisWorkbook.Path & "\Factura_" & numeroVenta & ".pdf"
+    
+    wsTemp.ExportAsFixedFormat Type:=xlTypePDF, Filename:=rutaPDF
+    
+    ' Eliminar hoja temporal
+    Application.DisplayAlerts = False
+    wsTemp.Delete
+    Application.DisplayAlerts = True
+    
+    MsgBox "PDF guardado en:" & vbCrLf & rutaPDF, vbInformation
+    
+    Exit Sub
+ErrorHandler:
+    MsgBox "Error guardando PDF: " & Err.Description, vbCritical
+End Sub
+
+Sub GuardarFacturaPDFAvanzado()
+    On Error GoTo ErrorHandler
+    
+    If Me.lstHistorial.ListIndex <= 0 Then
+        MsgBox "Seleccione una venta del historial", vbExclamation
+        Exit Sub
+    End If
+    
+    Dim numeroVenta As Long
+    numeroVenta = Val(Me.lstHistorial.List(Me.lstHistorial.ListIndex, 0))
+    
+    ' === OBTENER INFORMACIÓN DE LA VENTA ===
+    Dim cliente As String
+    Dim fecha As Date
+    Dim fila As Long
+    
+    For fila = 2 To wsVentas.Cells(wsVentas.Rows.Count, "A").End(xlUp).Row
+        If wsVentas.Cells(fila, 3).Value = numeroVenta Then
+            cliente = wsVentas.Cells(fila, 4).Value
+            fecha = wsVentas.Cells(fila, 1).Value
+            Exit For
+        End If
+    Next fila
+    
+    ' === CONFIGURAR CARPETAS POR AÑO Y MES ===
+    Dim rutaBase As String
+    Dim rutaAnio As String
+    Dim rutaMes As String
+    Dim rutaPDF As String
+    
+    ' Ruta base
+    rutaBase = ThisWorkbook.Path & "\FacturasIMP"
+    
+    ' Crear carpeta principal si no existe
+    If Dir(rutaBase, vbDirectory) = "" Then
+        MkDir rutaBase
+    End If
+    
+    ' Crear subcarpeta por año
+    rutaAnio = rutaBase & "\" & Year(fecha)
+    If Dir(rutaAnio, vbDirectory) = "" Then
+        MkDir rutaAnio
+    End If
+    
+    ' Crear subcarpeta por mes
+    rutaMes = rutaAnio & "\" & Format(fecha, "mm-mmmm")
+    If Dir(rutaMes, vbDirectory) = "" Then
+        MkDir rutaMes
+    End If
+    
+    ' Nombre del archivo con información detallada
+    Dim nombreArchivo As String
+    ' Limpiar el nombre del cliente de caracteres no válidos
+    cliente = Replace(cliente, "/", "-")
+    cliente = Replace(cliente, "\", "-")
+    cliente = Replace(cliente, ":", "-")
+    cliente = Replace(cliente, "*", "-")
+    cliente = Replace(cliente, "?", "-")
+    cliente = Replace(cliente, """", "-")
+    cliente = Replace(cliente, "<", "-")
+    cliente = Replace(cliente, ">", "-")
+    cliente = Replace(cliente, "|", "-")
+    
+    nombreArchivo = "FAC" & Format(numeroVenta, "00000") & "_" & _
+                   Format(fecha, "ddmmyyyy") & "_" & _
+                   Left(cliente, 20) & ".pdf"
+    
+    rutaPDF = rutaMes & "\" & nombreArchivo
+    
+    ' === CREAR Y EXPORTAR FACTURA ===
+    Application.ScreenUpdating = False
+    
+    Dim wsTemp As Worksheet
+    Set wsTemp = ThisWorkbook.Sheets.Add
+    wsTemp.Name = "TempPDF"
+    
+    GenerarFacturaTirilla wsTemp, numeroVenta
+    
+    ' Exportar a PDF
+    wsTemp.ExportAsFixedFormat Type:=xlTypePDF, _
+                                Filename:=rutaPDF, _
+                                Quality:=xlQualityStandard, _
+                                IncludeDocProperties:=False, _
+                                IgnorePrintAreas:=False, _
+                                OpenAfterPublish:=False
+    
+    ' Eliminar hoja temporal
+    Application.DisplayAlerts = False
+    wsTemp.Delete
+    Application.DisplayAlerts = True
+    Application.ScreenUpdating = True
+    
+    ' === REGISTRO DE FACTURAS GUARDADAS ===
+    Dim wsRegistro As Worksheet
+    On Error Resume Next
+    Set wsRegistro = ThisWorkbook.Sheets("RegistroPDF")
+    If wsRegistro Is Nothing Then
+        Set wsRegistro = ThisWorkbook.Sheets.Add
+        wsRegistro.Name = "RegistroPDF"
+        wsRegistro.Cells(1, 1).Value = "Fecha Guardado"
+        wsRegistro.Cells(1, 2).Value = "No. Factura"
+        wsRegistro.Cells(1, 3).Value = "Cliente"
+        wsRegistro.Cells(1, 4).Value = "Ruta PDF"
+        wsRegistro.Range("A1:D1").Font.Bold = True
+    End If
+    On Error GoTo ErrorHandler
+    
+    ' Agregar registro
+    Dim ultimaFila As Long
+    ultimaFila = wsRegistro.Cells(wsRegistro.Rows.Count, "A").End(xlUp).Row + 1
+    wsRegistro.Cells(ultimaFila, 1).Value = Now
+    wsRegistro.Cells(ultimaFila, 2).Value = numeroVenta
+    wsRegistro.Cells(ultimaFila, 3).Value = cliente
+    wsRegistro.Cells(ultimaFila, 4).Value = rutaPDF
+    
+    ' === MENÚ MEJORADO CON MÚLTIPLES MSGBOX ===
+    ' Primero confirmar que se guardó
+    Dim respuesta1 As VbMsgBoxResult
+    respuesta1 = MsgBox("? PDF guardado exitosamente" & vbCrLf & vbCrLf & _
+                       "Factura: " & nombreArchivo & vbCrLf & _
+                       "Ubicación: " & rutaMes & vbCrLf & vbCrLf & _
+                       "¿Desea abrir el PDF?", _
+                       vbYesNoCancel + vbQuestion, "Guardado Exitoso")
+    
+    If respuesta1 = vbYes Then
+        ' Abrir PDF
+        Shell "cmd /c start """" """ & rutaPDF & """", vbHide
+        
+    ElseIf respuesta1 = vbNo Then
+        ' Preguntar si abrir carpeta
+        Dim respuesta2 As VbMsgBoxResult
+        respuesta2 = MsgBox("¿Desea abrir la carpeta de facturas?", _
+                           vbYesNo + vbQuestion, "Abrir Carpeta")
+        
+        If respuesta2 = vbYes Then
+            Shell "explorer.exe """ & rutaMes & """", vbNormalFocus
+        Else
+            ' Solo mostrar confirmación final
+            MsgBox "PDF guardado correctamente." & vbCrLf & _
+                   "Puede encontrarlo en:" & vbCrLf & rutaMes, _
+                   vbInformation, "Proceso Completado"
+        End If
+    End If
+    
+    Exit Sub
+    
+ErrorHandler:
+    Application.ScreenUpdating = True
+    Application.DisplayAlerts = True
+    
+    MsgBox "Error: " & Err.Description, vbCritical
+    
+    On Error Resume Next
+    If Not wsTemp Is Nothing Then
+        Application.DisplayAlerts = False
+        wsTemp.Delete
+        Application.DisplayAlerts = True
+    End If
+End Sub
+
+Private Sub btnAbrirCarpetaFacturas_Click()
+    Dim rutaCarpeta As String
+    rutaCarpeta = ThisWorkbook.Path & "\FacturasIMP"
+    
+    ' Verificar si existe
+    If Dir(rutaCarpeta, vbDirectory) = "" Then
+        MsgBox "Aún no se ha creado la carpeta de facturas", vbInformation
+    Else
+        Shell "explorer.exe """ & rutaCarpeta & """", vbNormalFocus
+    End If
+End Sub
+
+' NUEVA FUNCIÓN PARA GUARDAR PDF AUTOMÁTICAMENTE
+Sub GuardarFacturaAutomatica(numVenta As Long, cliente As String, fecha As Date)
+    On Error Resume Next
+    
+    ' === BUSCAR ID DEL CLIENTE ===
+    Dim IdCliente As String
+    Dim filaCliente As Long
+    IdCliente = "" ' Por defecto vacío
+    
+    ' Buscar el cliente en la hoja Clientes
+    For filaCliente = 2 To wsClientes.Cells(wsClientes.Rows.Count, "B").End(xlUp).Row
+        If wsClientes.Cells(filaCliente, 2).Value = cliente Then
+            IdCliente = wsClientes.Cells(filaCliente, 1).Value ' Columna A tiene el ID
+            Exit For
+        End If
+    Next filaCliente
+    
+    ' Si no se encuentra, dejar vacío o poner un valor por defecto
+    If IdCliente = "" Then
+        If cliente = "CLIENTE GENERAL" Or cliente = "CONSUMIDOR FINAL" Then
+            IdCliente = "222222222" ' NIT genérico para consumidor final
+        Else
+            IdCliente = "SIN ID"
+        End If
+    End If
+    
+    ' Configurar rutas (resto igual)
+    Dim rutaBase As String, rutaAnio As String, rutaMes As String, rutaPDF As String
+    
+    rutaBase = ThisWorkbook.Path & "\FacturasIMP"
+    If Dir(rutaBase, vbDirectory) = "" Then MkDir rutaBase
+    
+    rutaAnio = rutaBase & "\" & Year(fecha)
+    If Dir(rutaAnio, vbDirectory) = "" Then MkDir rutaAnio
+    
+    rutaMes = rutaAnio & "\" & Format(fecha, "mm-mmmm")
+    If Dir(rutaMes, vbDirectory) = "" Then MkDir rutaMes
+    
+    ' Limpiar nombre cliente
+    Dim clienteLimpio As String
+    clienteLimpio = Replace(cliente, "/", "-")
+    clienteLimpio = Replace(clienteLimpio, "\", "-")
+    clienteLimpio = Replace(clienteLimpio, ":", "-")
+    clienteLimpio = Replace(clienteLimpio, "*", "-")
+    clienteLimpio = Replace(clienteLimpio, "?", "-")
+    clienteLimpio = Replace(clienteLimpio, """", "-")
+    clienteLimpio = Replace(clienteLimpio, "<", "-")
+    clienteLimpio = Replace(clienteLimpio, ">", "-")
+    clienteLimpio = Replace(clienteLimpio, "|", "-")
+    
+    ' Nombre del archivo
+    Dim nombreArchivo As String
+    nombreArchivo = "FAPOS" & Format(numVenta, "00000") & "_" & _
+                   Format(fecha, "ddmmyyyy") & "_" & _
+                   Left(clienteLimpio, 20) & ".pdf"
+    
+    rutaPDF = rutaMes & "\" & nombreArchivo
+    
+    ' Crear hoja temporal
+    Application.ScreenUpdating = False
+    Dim wsTemp As Worksheet
+    Set wsTemp = ThisWorkbook.Sheets.Add
+    
+    ' IMPORTANTE: Generar con el formato correcto
+    GenerarFacturaTirilla wsTemp, numVenta
+    
+    ' Configurar área de impresión antes de exportar
+    With wsTemp.PageSetup
+        .Zoom = False
+        .FitToPagesWide = 1
+        .FitToPagesTall = 1  ' Todo en una página
+    End With
+    
+    ' Exportar a PDF
+    wsTemp.ExportAsFixedFormat Type:=xlTypePDF, _
+                                Filename:=rutaPDF, _
+                                Quality:=xlQualityStandard, _
+                                IgnorePrintAreas:=False, _
+                                OpenAfterPublish:=False
+    
+    ' Limpiar
+    Application.DisplayAlerts = False
+    wsTemp.Delete
+    Application.DisplayAlerts = True
+    Application.ScreenUpdating = True
+    
+    ' Registrar en hoja RegistroPDF - AHORA CON EL ID CORRECTO
+'    Call RegistrarPDF("Factura POS", rutaPDF, numVenta, fecha, idCliente, cliente, Val(Replace(Me.lblTotal.Caption, "$", "")))
+    Call RegistrarPDF("Factura POS", rutaPDF, numVenta, fecha, IdCliente, cliente, Me.lblTotal)
+    
+    On Error GoTo 0
+End Sub
+
+Sub VerPDFFactura()
+    On Error GoTo ErrorHandler
+    
+    If Me.lstHistorial.ListIndex <= 0 Then
+        MsgBox "Seleccione una venta del historial", vbExclamation
+        Exit Sub
+    End If
+    
+    Dim numeroVenta As Long
+    numeroVenta = Val(Me.lstHistorial.List(Me.lstHistorial.ListIndex, 0))
+    
+    ' VERIFICAR SI ESTÁ ANULADA
+    Dim estaAnulada As Boolean
+    estaAnulada = False
+    
+    ' Verificar en el listbox del historial (columna 1 = Estado)
+    If Me.lstHistorial.List(Me.lstHistorial.ListIndex, 1) = "** ANULADA **" Then
+        estaAnulada = True
+    End If
+    
+    Dim tipoDocumento As String
+    Dim prefijo As String
+    
+    If estaAnulada Then
+        tipoDocumento = "Nota Crédito"
+        prefijo = "NC_FAPOS"
+    Else
+        tipoDocumento = "Factura POS"
+        prefijo = "FAPOS"
+    End If
+    
+    ' Confirmar
+    Dim respuesta As VbMsgBoxResult
+    respuesta = MsgBox("¿Desea ver " & IIf(estaAnulada, "la NOTA CRÉDITO de la factura anulada ", "la factura ") & _
+                      prefijo & Format(numeroVenta, "00000") & "?", _
+                      vbYesNo + vbQuestion, "Ver " & tipoDocumento)
+    
+    If respuesta = vbNo Then Exit Sub
+    
+    ' Buscar el PDF en RegistroPDF
+    Dim wsRegistro As Worksheet
+    On Error Resume Next
+    Set wsRegistro = ThisWorkbook.Sheets("RegistroPDF")
+    On Error GoTo ErrorHandler
+    
+    If wsRegistro Is Nothing Then
+        MsgBox "No se encontró el registro de PDFs", vbExclamation
+        Exit Sub
+    End If
+    
+    ' Buscar la ruta del PDF
+    Dim fila As Long
+    Dim rutaPDF As String
+    
+    For fila = 2 To wsRegistro.Cells(wsRegistro.Rows.Count, "C").End(xlUp).Row
+        If wsRegistro.Cells(fila, 3).Value = numeroVenta And _
+           wsRegistro.Cells(fila, 1).Value = tipoDocumento Then
+            rutaPDF = wsRegistro.Cells(fila, 2).Value
+            Exit For
+        End If
+    Next fila
+    
+    If rutaPDF = "" Or Dir(rutaPDF) = "" Then
+        ' Si está anulada y no encuentra NC, intentar generarla
+        If estaAnulada Then
+            MsgBox "No se encontró la Nota Crédito. Se generará ahora...", vbInformation
+            Call GenerarNotaCredito(numeroVenta)
+            
+            ' Intentar buscar de nuevo
+            For fila = 2 To wsRegistro.Cells(wsRegistro.Rows.Count, "C").End(xlUp).Row
+                If wsRegistro.Cells(fila, 3).Value = numeroVenta And _
+                   wsRegistro.Cells(fila, 1).Value = "Nota Crédito" Then
+                    rutaPDF = wsRegistro.Cells(fila, 2).Value
+                    Exit For
+                End If
+            Next fila
+        Else
+            MsgBox "No se encontró el PDF de esta " & tipoDocumento, vbExclamation
+            Exit Sub
+        End If
+    End If
+    
+    ' Abrir el PDF
+    If rutaPDF <> "" And Dir(rutaPDF) <> "" Then
+        Shell "cmd /c start """" """ & rutaPDF & """", vbHide
+        MsgBox tipoDocumento & " abierto en su visor PDF", vbInformation
+    Else
+        MsgBox "No se pudo abrir el archivo PDF", vbExclamation
+    End If
+    
+    Exit Sub
+ErrorHandler:
+    MsgBox "Error: " & Err.Description, vbCritical
+End Sub
+
+Sub GenerarNotaCredito(numeroVentaOriginal As Long)
+    On Error GoTo ErrorHandler
+    
+    ' Obtener datos de la venta original
+    Dim cliente As String, fecha As Date, totalAnulado As Double
+    Dim fila As Long
+    Dim fechaOriginal As Date
+    
+    ' Primera pasada: obtener información general
+    For fila = 2 To wsVentas.Cells(wsVentas.Rows.Count, "A").End(xlUp).Row
+        If wsVentas.Cells(fila, 3).Value = numeroVentaOriginal Then
+            If cliente = "" Then
+                cliente = wsVentas.Cells(fila, 4).Value
+                fechaOriginal = wsVentas.Cells(fila, 1).Value
+            End If
+            ' Solo sumar si NO está previamente anulada
+            If wsVentas.Cells(fila, 10).Value <> "ANULADA" Then
+                totalAnulado = totalAnulado + Val(wsVentas.Cells(fila, 9).Value)
+            End If
+        End If
+    Next fila
+    
+    ' Crear hoja temporal para Nota Crédito
+    Application.ScreenUpdating = False
+    Dim wsNC As Worksheet
+    Set wsNC = ThisWorkbook.Sheets.Add
+    
+    ' CONFIGURAR TODA LA HOJA COMO TEXTO
+    wsNC.Cells.NumberFormat = "@"
+    wsNC.Cells.Font.Name = "Courier New"
+    wsNC.Cells.Font.Size = 10
+    
+    ' Configurar ancho columna para 80mm
+    wsNC.Columns("A:A").ColumnWidth = 48
+    
+    Dim filaNC As Long
+    filaNC = 1
+    
+    ' === ENCABEZADO CON AVISO ROJO ===
+    wsNC.Cells(filaNC, 1).Value = "================================"
+    wsNC.Cells(filaNC, 1).Font.Color = RGB(255, 0, 0)
+    
+    filaNC = filaNC + 1
+    wsNC.Cells(filaNC, 1).Value = "       NOTA CRÉDITO"
+    wsNC.Cells(filaNC, 1).Font.Bold = True
+    wsNC.Cells(filaNC, 1).Font.Size = 14
+    wsNC.Cells(filaNC, 1).Font.Color = RGB(255, 0, 0)
+    wsNC.Cells(filaNC, 1).Interior.Color = RGB(255, 220, 220)
+    
+    filaNC = filaNC + 1
+    wsNC.Cells(filaNC, 1).Value = "================================"
+    wsNC.Cells(filaNC, 1).Font.Color = RGB(255, 0, 0)
+    
+    ' === DATOS DE LA EMPRESA ===
+'    filaNC = filaNC + 1
+'    wsNC.Cells(filaNC, 1).Value = "    CONSUELO RESTREPO PULGARIN"
+'    wsNC.Cells(filaNC, 1).Font.Bold = True
+    
+    filaNC = filaNC + 1
+    wsNC.Cells(filaNC, 1).Value = "        METROPHARMA LA 80"
+    wsNC.Cells(filaNC, 1).Font.Bold = True
+    
+    
+    
+    filaNC = filaNC + 1
+    wsNC.Cells(filaNC, 1).Value = "         NIT: 21.401.990"
+    
+    filaNC = filaNC + 1
+    wsNC.Cells(filaNC, 1).Value = "--------------------------------"
+    
+    ' === INFORMACIÓN DE LA ANULACIÓN ===
+    filaNC = filaNC + 1
+    wsNC.Cells(filaNC, 1).Value = "Fecha Anulación: " & Format(Date, "dd/mm/yyyy")
+    
+    filaNC = filaNC + 1
+    wsNC.Cells(filaNC, 1).Value = "Hora: " & Format(Time, "hh:mm:ss")
+    
+    filaNC = filaNC + 1
+    wsNC.Cells(filaNC, 1).Value = "--------------------------------"
+    
+    filaNC = filaNC + 1
+    wsNC.Cells(filaNC, 1).Value = "ANULA FACTURA: FAPOS" & Format(numeroVentaOriginal, "00000")
+    wsNC.Cells(filaNC, 1).Font.Bold = True
+    wsNC.Cells(filaNC, 1).Font.Color = RGB(255, 0, 0)
+    
+    filaNC = filaNC + 1
+    wsNC.Cells(filaNC, 1).Value = "Fecha Original: " & Format(fechaOriginal, "dd/mm/yyyy")
+    
+    filaNC = filaNC + 1
+    wsNC.Cells(filaNC, 1).Value = "Cliente: " & Left(cliente, 30)
+    
+    filaNC = filaNC + 1
+    wsNC.Cells(filaNC, 1).Value = "================================"
+    
+    ' === PRODUCTOS DEVUELTOS ===
+    filaNC = filaNC + 1
+    wsNC.Cells(filaNC, 1).Value = "PRODUCTOS DEVUELTOS:"
+    wsNC.Cells(filaNC, 1).Font.Bold = True
+    
+    filaNC = filaNC + 1
+    wsNC.Cells(filaNC, 1).Value = "--------------------------------"
+    
+    ' IMPORTANTE: Solo listar productos de esta venta específica
+    Dim productosListados As Integer
+    productosListados = 0
+    
+    For fila = 2 To wsVentas.Cells(wsVentas.Rows.Count, "A").End(xlUp).Row
+        ' VERIFICAR que sea la venta correcta Y que NO esté previamente anulada
+        If wsVentas.Cells(fila, 3).Value = numeroVentaOriginal And _
+           wsVentas.Cells(fila, 10).Value <> "ANULADA" Then
+            
+            Dim producto As String
+            Dim cantidad As String
+            Dim subtotal As Double
+            
+            producto = Left(wsVentas.Cells(fila, 6).Value, 28)
+            cantidad = CStr(Val(wsVentas.Cells(fila, 8).Value))
+            
+            ' IMPORTANTE: Obtener el valor numérico correctamente
+            subtotal = Val(wsVentas.Cells(fila, 9).Value)
+            
+            filaNC = filaNC + 1
+            wsNC.Cells(filaNC, 1).Value = producto
+            
+            filaNC = filaNC + 1
+            ' FORMATEAR CORRECTAMENTE SIN PERDER CEROS
+            wsNC.Cells(filaNC, 1).Value = "  Cant: " & cantidad & "    Valor: $" & Format(subtotal, "#0")
+            
+            productosListados = productosListados + 1
+        End If
+    Next fila
+    
+    ' Verificar que se listaron productos
+    If productosListados = 0 Then
+        filaNC = filaNC + 1
+        wsNC.Cells(filaNC, 1).Value = "(No hay productos para anular)"
+    End If
+    
+    ' === TOTAL ANULADO ===
+    filaNC = filaNC + 1
+    wsNC.Cells(filaNC, 1).Value = "================================"
+    wsNC.Cells(filaNC, 1).Font.Color = RGB(255, 0, 0)
+    
+    filaNC = filaNC + 1
+    ' FORMATEAR TOTAL CORRECTAMENTE
+    wsNC.Cells(filaNC, 1).Value = "TOTAL ANULADO: $" & Format(totalAnulado, "#0")
+    wsNC.Cells(filaNC, 1).Font.Bold = True
+    wsNC.Cells(filaNC, 1).Font.Size = 12
+    wsNC.Cells(filaNC, 1).Font.Color = RGB(255, 0, 0)
+    
+    filaNC = filaNC + 1
+    wsNC.Cells(filaNC, 1).Value = "================================"
+    wsNC.Cells(filaNC, 1).Font.Color = RGB(255, 0, 0)
+    
+    ' === FIRMA Y AUTORIZACIÓN ===
+    filaNC = filaNC + 2
+    wsNC.Cells(filaNC, 1).Value = "Autorizado por: ______________"
+    
+    filaNC = filaNC + 2
+    wsNC.Cells(filaNC, 1).Value = "Firma: _______________________"
+    
+    ' === CONFIGURAR PÁGINA ===
+    With wsNC.PageSetup
+        .PrintArea = "$A$1:$A$" & filaNC
+        .Orientation = xlPortrait
+        .LeftMargin = 10
+        .RightMargin = 10
+        .TopMargin = 10
+        .BottomMargin = 10
+        .Zoom = 100
+        .CenterHorizontally = True
+    End With
+    
+    ' Guardar como PDF
+    Dim rutaBase As String, rutaPDF As String
+    rutaBase = ThisWorkbook.Path & "\FacturasIMP\NotasCredito"
+    
+    ' Crear carpetas si no existen
+    If Dir(ThisWorkbook.Path & "\FacturasIMP", vbDirectory) = "" Then
+        MkDir ThisWorkbook.Path & "\FacturasIMP"
+    End If
+    If Dir(rutaBase, vbDirectory) = "" Then
+        MkDir rutaBase
+    End If
+    
+    rutaPDF = rutaBase & "\NC_FAPOS" & Format(numeroVentaOriginal, "00000") & "_" & _
+             Format(Date, "ddmmyyyy") & ".pdf"
+    
+    wsNC.ExportAsFixedFormat Type:=xlTypePDF, Filename:=rutaPDF, OpenAfterPublish:=False
+    
+    ' Eliminar hoja temporal
+    Application.DisplayAlerts = False
+    wsNC.Delete
+    Application.DisplayAlerts = True
+    Application.ScreenUpdating = True
+    
+    ' Registrar en RegistroPDF
+    Call RegistrarPDF("Nota Crédito", rutaPDF, numeroVentaOriginal, Date, _
+                      "21401990", cliente, -totalAnulado)
+    
+    Exit Sub
+ErrorHandler:
+    Application.ScreenUpdating = True
+    MsgBox "Error generando Nota Crédito: " & Err.Description, vbCritical
+End Sub
+
+Sub MarcarVentaAnulada(numeroVenta As Long)
+    ' Agregar columna de estado si no existe
+    Dim fila As Long
+    If wsVentas.Cells(1, 10).Value <> "Estado" Then
+        wsVentas.Cells(1, 10).Value = "Estado"
+    End If
+    
+    ' Marcar como anulada
+    For fila = 2 To wsVentas.Cells(wsVentas.Rows.Count, "A").End(xlUp).Row
+        If wsVentas.Cells(fila, 3).Value = numeroVenta Then
+            wsVentas.Cells(fila, 10).Value = "ANULADA"
+            wsVentas.Cells(fila, 10).Font.Color = RGB(255, 0, 0)
+        End If
+    Next fila
+End Sub
+
+Sub RegistrarPDF(tipoDoc As String, ruta As String, numFactura As Long, _
+                 fecha As Date, nit As String, nombre As String, total As Double)
+    
+    On Error Resume Next
+    
+    ' Buscar o crear hoja RegistroPDF
+    Dim wsReg As Worksheet
+    Set wsReg = ThisWorkbook.Sheets("RegistroPDF")
+    
+    If wsReg Is Nothing Then
+        Set wsReg = ThisWorkbook.Sheets.Add
+        wsReg.Name = "RegistroPDF"
+        ' Crear encabezados según tu nueva estructura
+        wsReg.Cells(1, 1).Value = "Tipo de documento"
+        wsReg.Cells(1, 2).Value = "Ruta PDF"
+        wsReg.Cells(1, 3).Value = "Número de factura"
+        wsReg.Cells(1, 4).Value = "Fecha Emisión"
+        wsReg.Cells(1, 5).Value = "NIT Receptor"
+        wsReg.Cells(1, 6).Value = "Nombre Receptor"
+        wsReg.Cells(1, 7).Value = "Total"
+        
+        wsReg.Range("A1:G1").Font.Bold = True
+    End If
+    
+    ' Agregar registro
+    Dim ultimaFila As Long
+    ultimaFila = wsReg.Cells(wsReg.Rows.Count, "A").End(xlUp).Row + 1
+    
+    ' Limpiar el valor "total" quitando puntos y comas, y convertirlo a número
+    Dim totalLimpio As Double
+    totalLimpio = Val(Replace(Replace(total, ".", ""), ",", ""))
+    
+    
+    wsReg.Cells(ultimaFila, 1).Value = tipoDoc
+    wsReg.Cells(ultimaFila, 2).Value = ruta
+    wsReg.Cells(ultimaFila, 3).Value = numFactura
+    wsReg.Cells(ultimaFila, 4).Value = fecha
+    wsReg.Cells(ultimaFila, 5).Value = nit
+    wsReg.Cells(ultimaFila, 6).Value = nombre
+    wsReg.Cells(ultimaFila, 7).Value = totalLimpio
+    
+    On Error GoTo 0
+End Sub
+'--------------------REPORTES----------------------
+
+' === EVENTOS DE LOS BOTONES DE PESTAÑAS ===
+Private Sub btnTabPOS_Click()
+    Call MostrarModoPOS
+End Sub
+
+Private Sub btnTabHistorial_Click()
+    Call MostrarHistorialVentas
+End Sub
+
+Private Sub btnTabReportes_Click()
+    Call MostrarReportes
+End Sub
+
+' === NUEVA FUNCIÓN PARA MOSTRAR REPORTES ===
+Sub MostrarReportes()
+    ModoActual = "REPORTES"
+    
+    ' Ocultar todo lo demás
+    Me.lblProductos.Visible = False
+    Me.lstProductos.Visible = False
+    Me.lblVenta.Visible = False
+    Me.lstVenta.Visible = False
+    Me.lblCantidad.Visible = False
+    Me.txtCantidad.Visible = False
+    Me.btnAgregar.Visible = False
+    Me.btnEliminar.Visible = False
+    Me.lblCliente.Visible = False
+    Me.cmbCliente.Visible = False
+    Me.lblTotalTexto.Visible = False
+    Me.lblTotal.Visible = False
+    Me.btnFinalizar.Visible = False
+    Me.btnLimpiar.Visible = False
+    Me.btnBuscar.Visible = False
+    Me.txtBuscar.Visible = False
+    Me.lblBuscar.Visible = False
+    Me.btnHistorial.Visible = False
+    Me.btnPosicionar.Visible = False
+    Me.lstNombre.Visible = False
+    Me.lblValorUnitario.Visible = False
+    Me.txtValorUnd.Visible = False
+    Me.lblTituloHistorial.Visible = False
+    Me.lstHistorial.Visible = False
+    Me.btnVolverPOS.Visible = True
+    Me.btnActualizarHistorial.Visible = False
+    Me.btnAnular.Visible = False
+    Me.btnImprimir.Visible = False
+    Me.btnGuardarPDF.Visible = False
+    'Pepponcio changes
+'    Me.btnAdminUsuarios.Visible = False
+'    Me.lblVentaHoy.Visible = False
+    
+    ' Mostrar frame de reportes
+    Me.frameReportes.Visible = True
+    
+    ' Ocultar botones
+    Me.frameAjustes.Visible = False
+    
+    ' Cambiar título
+    Me.Caption = "REPORTES Y ESTADÍSTICAS"
+    
+    ' Actualizar datos
+    Call ActualizarDatosReportes
+End Sub
+
+' === FUNCIÓN PARA ACTUALIZAR DATOS DE REPORTES ===
+Sub ActualizarDatosReportes()
+    On Error GoTo ErrorHandler
+    
+    ' === CALCULAR VENTA DEL DÍA ===
+    Dim ventaHoy As Double
+    Dim ventaSemana As Double
+    Dim ventaMes As Double
+    Dim fila As Long
+    
+    ventaHoy = 0
+    ventaSemana = 0
+    ventaMes = 0
+    
+    For fila = 2 To wsVentas.Cells(wsVentas.Rows.Count, "A").End(xlUp).Row
+        If wsVentas.Cells(fila, 10).Value <> "ANULADA" Then
+            Dim fechaVenta As Date
+            Dim montoVenta As Double
+            
+            fechaVenta = wsVentas.Cells(fila, 1).Value
+            montoVenta = wsVentas.Cells(fila, 9).Value
+            
+            ' Venta del día
+            If fechaVenta = Date Then
+                ventaHoy = ventaHoy + montoVenta
+            End If
+            
+            ' Venta de la semana
+            If fechaVenta >= Date - 7 And fechaVenta <= Date Then
+                ventaSemana = ventaSemana + montoVenta
+            End If
+            
+            ' Venta del mes
+            If Month(fechaVenta) = Month(Date) And Year(fechaVenta) = Year(Date) Then
+                ventaMes = ventaMes + montoVenta
+            End If
+        End If
+    Next fila
+    
+    ' Actualizar labels
+    Me.lblVentaHoy.Caption = "Venta de Hoy: " & Format(ventaHoy, "$#,##0")
+    Me.lblVentaSemana.Caption = "Última Semana: " & Format(ventaSemana, "$#,##0")
+    Me.lblVentaMes.Caption = "Mes Actual: " & Format(ventaMes, "$#,##0")
+    
+    ' === TOP PRODUCTOS MÁS VENDIDOS ===
+    Call CargarTopProductos
+    
+    Exit Sub
+ErrorHandler:
+    MsgBox "Error actualizando reportes: " & Err.Description
+End Sub
+
+' === CARGAR TOP PRODUCTOS ===
+Sub CargarTopProductos()
+    Dim dictProductos As Object
+    Set dictProductos = CreateObject("Scripting.Dictionary")
+    
+    Dim fila As Long
+    
+    ' Contar productos vendidos
+    For fila = 2 To wsVentas.Cells(wsVentas.Rows.Count, "A").End(xlUp).Row
+        If wsVentas.Cells(fila, 10).Value <> "ANULADA" Then
+            Dim producto As String
+            Dim cantidad As Integer
+            Dim monto As Double
+            
+            producto = wsVentas.Cells(fila, 6).Value
+            cantidad = wsVentas.Cells(fila, 8).Value
+            monto = wsVentas.Cells(fila, 9).Value
+            
+            If dictProductos.Exists(producto) Then
+                dictProductos(producto)(0) = dictProductos(producto)(0) + cantidad
+                dictProductos(producto)(1) = dictProductos(producto)(1) + monto
+            Else
+                dictProductos.Add producto, Array(cantidad, monto)
+            End If
+        End If
+    Next fila
+    
+    ' Limpiar ListBox
+    Me.lstTopProductos.Clear
+    Me.lstTopProductos.ColumnCount = 3
+    Me.lstTopProductos.ColumnWidths = "200;50;80"
+    
+    ' Encabezados
+    Me.lstTopProductos.AddItem
+    Me.lstTopProductos.List(0, 0) = "PRODUCTO"
+    Me.lstTopProductos.List(0, 1) = "CANT"
+    Me.lstTopProductos.List(0, 2) = "TOTAL"
+    
+    ' Ordenar y mostrar top 10 (simplificado)
+    Dim key As Variant
+    Dim contador As Integer
+    contador = 0
+    
+    For Each key In dictProductos.Keys
+        If contador < 10 Then
+            Me.lstTopProductos.AddItem
+            Me.lstTopProductos.List(Me.lstTopProductos.ListCount - 1, 0) = Left(key, 30)
+            Me.lstTopProductos.List(Me.lstTopProductos.ListCount - 1, 1) = dictProductos(key)(0)
+            Me.lstTopProductos.List(Me.lstTopProductos.ListCount - 1, 2) = Format(dictProductos(key)(1), "$#,##0")
+            contador = contador + 1
+        End If
+    Next key
+End Sub
+
+' === BOTÓN PARA GENERAR REPORTE DETALLADO ===
+Private Sub btnGenerarReporteDetallado_Click()
+    Call GenerarReporteExcel
+End Sub
+Sub GenerarReporteExcel()
+    On Error GoTo ErrorHandler
+    
+    ' Crear nueva hoja de reporte
+    Dim wsReporte As Worksheet
+    Set wsReporte = ThisWorkbook.Sheets.Add
+    wsReporte.Name = "Reporte_" & Format(Date, "ddmmyy_hhmmss")
+    
+    ' Variables para cálculos
+    Dim ventaHoy As Double, ventaSemana As Double, ventaMes As Double
+    Dim cantidadVentasHoy As Integer, cantidadVentasMes As Integer
+    Dim fila As Long, filaReporte As Long
+    
+    ventaHoy = 0
+    ventaSemana = 0
+    ventaMes = 0
+    cantidadVentasHoy = 0
+    cantidadVentasMes = 0
+    
+    ' === CALCULAR TOTALES ===
+    For fila = 2 To wsVentas.Cells(wsVentas.Rows.Count, "A").End(xlUp).Row
+        If wsVentas.Cells(fila, 10).Value <> "ANULADA" Then
+            Dim fechaVenta As Date
+            Dim montoVenta As Double
+            
+            fechaVenta = wsVentas.Cells(fila, 1).Value
+            montoVenta = Val(wsVentas.Cells(fila, 9).Value)
+            
+            ' Venta del día
+            If fechaVenta = Date Then
+                ventaHoy = ventaHoy + montoVenta
+                cantidadVentasHoy = cantidadVentasHoy + 1
+            End If
+            
+            ' Venta de la semana
+            If fechaVenta >= Date - 7 And fechaVenta <= Date Then
+                ventaSemana = ventaSemana + montoVenta
+            End If
+            
+            ' Venta del mes
+            If Month(fechaVenta) = Month(Date) And Year(fechaVenta) = Year(Date) Then
+                ventaMes = ventaMes + montoVenta
+                cantidadVentasMes = cantidadVentasMes + 1
+            End If
+        End If
+    Next fila
+    
+    ' === FORMATO DEL REPORTE ===
+    With wsReporte
+        ' Título principal
+        .Range("A1:F1").Merge
+        .Range("A1").Value = "REPORTE DE VENTAS - SISTEMA POS"
+        .Range("A1").Font.Bold = True
+        .Range("A1").Font.Size = 16
+        .Range("A1").HorizontalAlignment = xlCenter
+        .Range("A1").Interior.Color = RGB(200, 200, 255)
+        
+        ' Información general
+        .Range("A3").Value = "Fecha del Reporte:"
+        .Range("B3").Value = Format(Date, "dd/mm/yyyy")
+        .Range("A4").Value = "Hora:"
+        .Range("B4").Value = Format(Time, "hh:mm:ss")
+        
+        ' === RESUMEN DEL DÍA ===
+        .Range("A6:D6").Merge
+        .Range("A6").Value = "RESUMEN DEL DÍA"
+        .Range("A6").Font.Bold = True
+        .Range("A6").Font.Size = 14
+        .Range("A6").Interior.Color = RGB(220, 220, 220)
+        
+        .Range("A7").Value = "Total Vendido:"
+        .Range("B7").Value = "$" & Int(ventaHoy)  ' Sin decimales ni formato
+        .Range("B7").Font.Bold = True
+        
+        .Range("A8").Value = "Número de Ventas:"
+        .Range("B8").Value = cantidadVentasHoy
+        
+        If cantidadVentasHoy > 0 Then
+            .Range("A9").Value = "Venta Promedio:"
+            .Range("B9").Value = "$" & Int(ventaHoy / cantidadVentasHoy)
+        End If
+        
+        ' === RESUMEN SEMANAL ===
+        .Range("A11:D11").Merge
+        .Range("A11").Value = "RESUMEN ÚLTIMOS 7 DÍAS"
+        .Range("A11").Font.Bold = True
+        .Range("A11").Font.Size = 14
+        .Range("A11").Interior.Color = RGB(220, 220, 220)
+        
+        .Range("A12").Value = "Total Vendido:"
+        .Range("B12").Value = "$" & Int(ventaSemana)
+        .Range("B12").Font.Bold = True
+        
+        ' === RESUMEN MENSUAL ===
+        .Range("A14:D14").Merge
+        .Range("A14").Value = "RESUMEN DEL MES (" & Format(Date, "mmmm") & ")"
+        .Range("A14").Font.Bold = True
+        .Range("A14").Font.Size = 14
+        .Range("A14").Interior.Color = RGB(220, 220, 220)
+        
+        .Range("A15").Value = "Total Vendido:"
+        .Range("B15").Value = "$" & Int(ventaMes)
+        .Range("B15").Font.Bold = True
+        
+        .Range("A16").Value = "Número de Ventas:"
+        .Range("B16").Value = cantidadVentasMes
+        
+        ' === PRODUCTOS MÁS VENDIDOS ===
+        .Range("A19:F19").Merge
+        .Range("A19").Value = "TOP 10 PRODUCTOS MÁS VENDIDOS DEL MES"
+        .Range("A19").Font.Bold = True
+        .Range("A19").Font.Size = 14
+        .Range("A19").Interior.Color = RGB(220, 220, 220)
+        
+        ' Encabezados de productos
+        .Range("A20").Value = "Ranking"
+        .Range("B20").Value = "Código"
+        .Range("C20").Value = "Producto"
+        .Range("D20").Value = "Cantidad"
+        .Range("E20").Value = "Total Vendido"
+        .Range("F20").Value = "Porcentaje"
+        .Range("A20:F20").Font.Bold = True
+        .Range("A20:F20").Interior.Color = RGB(240, 240, 240)
+        
+        ' Calcular top productos
+        Dim dictProductos As Object
+        Set dictProductos = CreateObject("Scripting.Dictionary")
+        
+        For fila = 2 To wsVentas.Cells(wsVentas.Rows.Count, "A").End(xlUp).Row
+            If wsVentas.Cells(fila, 10).Value <> "ANULADA" Then
+                ' Verificar que sea del mes actual
+                If Month(wsVentas.Cells(fila, 1).Value) = Month(Date) And _
+                   Year(wsVentas.Cells(fila, 1).Value) = Year(Date) Then
+                    
+                    Dim codigo As String, producto As String
+                    Dim cantidad As Integer, monto As Double
+                    
+                    codigo = wsVentas.Cells(fila, 5).Value
+                    producto = wsVentas.Cells(fila, 6).Value
+                    cantidad = Val(wsVentas.Cells(fila, 8).Value)
+                    monto = Val(wsVentas.Cells(fila, 9).Value)
+                    
+                    Dim clave As String
+                    clave = codigo & "|" & producto
+                    
+                    If dictProductos.Exists(clave) Then
+                        dictProductos(clave)(0) = dictProductos(clave)(0) + cantidad
+                        dictProductos(clave)(1) = dictProductos(clave)(1) + monto
+                    Else
+                        dictProductos.Add clave, Array(cantidad, monto)
+                    End If
+                End If
+            End If
+        Next fila
+        
+        ' Ordenar y mostrar top 10
+        filaReporte = 21
+        Dim ranking As Integer
+        ranking = 1
+        
+        Dim key As Variant
+        For Each key In dictProductos.Keys
+            If ranking <= 10 Then
+                Dim partes() As String
+                partes = Split(key, "|")
+                
+                .Cells(filaReporte, 1).Value = ranking
+                .Cells(filaReporte, 2).Value = partes(0) ' Código
+                .Cells(filaReporte, 3).Value = partes(1) ' Producto
+                .Cells(filaReporte, 4).Value = dictProductos(key)(0) ' Cantidad sin formato
+                .Cells(filaReporte, 5).Value = "$" & Int(dictProductos(key)(1)) ' Total sin decimales
+                
+                If ventaMes > 0 Then
+                    Dim porcentaje As Double
+                    porcentaje = (dictProductos(key)(1) / ventaMes) * 100
+                    .Cells(filaReporte, 6).Value = Int(porcentaje) & "%"
+                End If
+                
+                filaReporte = filaReporte + 1
+                ranking = ranking + 1
+            End If
+        Next key
+        
+        ' === RESUMEN FINAL ===
+        filaReporte = filaReporte + 2
+        .Range("A" & filaReporte & ":F" & filaReporte).Merge
+        .Range("A" & filaReporte).Value = "GENERADO POR SISTEMA POS - " & Format(Now, "dd/mm/yyyy hh:mm:ss")
+        .Range("A" & filaReporte).Font.Italic = True
+        .Range("A" & filaReporte).Font.Size = 8
+        .Range("A" & filaReporte).HorizontalAlignment = xlCenter
+        
+        ' === FORMATO FINAL ===
+        ' Ajustar columnas
+        .Columns("A:A").ColumnWidth = 15
+        .Columns("B:B").ColumnWidth = 15
+        .Columns("C:C").ColumnWidth = 30
+        .Columns("D:D").ColumnWidth = 12
+        .Columns("E:E").ColumnWidth = 15
+        .Columns("F:F").ColumnWidth = 12
+        
+        ' Bordes
+        .Range("A6:D9").Borders.LineStyle = xlContinuous
+        .Range("A11:D12").Borders.LineStyle = xlContinuous
+        .Range("A14:D16").Borders.LineStyle = xlContinuous
+        If filaReporte > 21 Then
+            .Range("A20:F" & (filaReporte - 3)).Borders.LineStyle = xlContinuous
+        End If
+        
+        ' Seleccionar celda inicial
+        .Range("A1").Select
+    End With
+    
+    MsgBox "Reporte generado exitosamente" & vbCrLf & vbCrLf & _
+           "Hoja: " & wsReporte.Name & vbCrLf & _
+           "Ventas del día: $" & Int(ventaHoy) & vbCrLf & _
+           "Ventas del mes: $" & Int(ventaMes), _
+           vbInformation, "Reporte Completo"
+    
+    Exit Sub
+    
+ErrorHandler:
+    MsgBox "Error generando reporte: " & Err.Description & vbCrLf & _
+           "Línea del error: " & Erl, vbCritical
+    On Error Resume Next
+    Application.DisplayAlerts = False
+    wsReporte.Delete
+    Application.DisplayAlerts = True
+End Sub
+
+
+
+' === EVENTO DEL BOTÓN DE PESTAÑA ===
+Private Sub btnTabAjustes_Click()
+    Call MostrarAjustes
+End Sub
+
+' === MOSTRAR MODO AJUSTES ===
+Sub MostrarAjustes()
+    ModoActual = "AJUSTES"
+    
+    ' Ocultar todo lo demás
+    On Error Resume Next
+    Me.lblProductos.Visible = False
+    Me.lstProductos.Visible = False
+    Me.lblVenta.Visible = False
+    Me.lstVenta.Visible = False
+    Me.lblCantidad.Visible = False
+    Me.txtCantidad.Visible = False
+    Me.btnAgregar.Visible = False
+    Me.btnEliminar.Visible = False
+    Me.lblCliente.Visible = False
+    Me.cmbCliente.Visible = False
+    Me.lblTotalTexto.Visible = False
+    Me.lblTotal.Visible = False
+    Me.btnFinalizar.Visible = False
+    Me.btnLimpiar.Visible = False
+    Me.btnBuscar.Visible = False
+    Me.txtBuscar.Visible = False
+    Me.lblBuscar.Visible = False
+    Me.btnHistorial.Visible = False
+    Me.btnPosicionar.Visible = False
+    Me.lstNombre.Visible = False
+    Me.lblValorUnitario.Visible = False
+    Me.txtValorUnd.Visible = False
+    Me.lblTituloHistorial.Visible = False
+    Me.lstHistorial.Visible = False
+    Me.btnVolverPOS.Visible = True
+    Me.btnActualizarHistorial.Visible = False
+    Me.btnAnular.Visible = False
+    Me.btnImprimir.Visible = False
+    Me.frameReportes.Visible = False
+    On Error GoTo 0
+    
+    ' Mostrar frame de ajustes
+    Me.frameAjustes.Visible = True
+    
+    ' Cambiar título
+    Me.Caption = "AJUSTES DE INVENTARIO"
+    
+    ' Limpiar campos
+    Me.txtBuscarAjuste.Text = ""
+    Me.txtNuevoPrecio.Text = ""
+    Me.lblProductoEncontrado.Caption = "Producto: (ninguno seleccionado)"
+    Me.lblPrecioActual.Caption = "Precio Actual: $0"
+    Me.lstProductosAjuste.Clear
+    filaProductoActual = 0
+End Sub
+
+' === BUSCAR PRODUCTO PARA AJUSTAR ===
+Private Sub btnBuscarAjuste_Enter()
+    Call BuscarProductoAjuste
+    
+End Sub
+
+
+Private Sub btnBuscarAjuste_Click()
+    Call BuscarProductoAjuste
+End Sub
+
+Private Sub txtBuscarAjuste_KeyPress(ByVal KeyAscii As MSForms.ReturnInteger)
+    If KeyAscii = 13 Then ' Enter
+        Call BuscarProductoAjuste
+        KeyAscii = 0
+    End If
+End Sub
+
+Sub BuscarProductoAjuste()
+    On Error GoTo ErrorHandler
+    
+    Dim textoBusqueda As String
+    Dim fila As Long
+    
+    textoBusqueda = UCase(Trim(Me.txtBuscarAjuste.Text))
+    
+    If textoBusqueda = "" Then
+        MsgBox "Ingrese un código o nombre para buscar", vbExclamation
+        Exit Sub
+    End If
+    
+    ' Limpiar lista
+    Me.lstProductosAjuste.Clear
+    Me.lstProductosAjuste.ColumnCount = 4
+    Me.lstProductosAjuste.ColumnWidths = "80;180;60;0"
+    
+    
+    
+    ' Encabezados
+    Me.lstProductosAjuste.AddItem
+    Me.lstProductosAjuste.List(0, 0) = "CÓDIGO"
+    Me.lstProductosAjuste.List(0, 1) = "PRODUCTO"
+    Me.lstProductosAjuste.List(0, 2) = "PRECIO"
+    
+    ' Buscar en productos
+    Dim encontrados As Integer
+    encontrados = 0
+    
+    For fila = 3 To wsProductos.Cells(wsProductos.Rows.Count, "A").End(xlUp).Row
+        ' Buscar por código o nombre
+        If InStr(1, UCase(wsProductos.Cells(fila, 1).Value), textoBusqueda) > 0 Or _
+           InStr(1, UCase(wsProductos.Cells(fila, 2).Value), textoBusqueda) > 0 Then
+            
+            Me.lstProductosAjuste.AddItem
+            Me.lstProductosAjuste.List(Me.lstProductosAjuste.ListCount - 1, 0) = wsProductos.Cells(fila, 1).Value
+            Me.lstProductosAjuste.List(Me.lstProductosAjuste.ListCount - 1, 1) = wsProductos.Cells(fila, 2).Value
+            Me.lstProductosAjuste.List(Me.lstProductosAjuste.ListCount - 1, 2) = Format(wsProductos.Cells(fila, 6).Value, "$#,##0")
+            Me.lstProductosAjuste.List(Me.lstProductosAjuste.ListCount - 1, 3) = fila ' Guardar fila
+            
+            encontrados = encontrados + 1
+        End If
+    Next fila
+    
+    If encontrados = 0 Then
+        MsgBox "No se encontraron productos con: " & textoBusqueda, vbInformation
+    ElseIf encontrados = 1 Then
+        ' Si solo hay uno, seleccionarlo automáticamente
+        Me.lstProductosAjuste.ListIndex = 1
+        Call lstProductosAjuste_Click
+    End If
+    
+    Exit Sub
+ErrorHandler:
+    MsgBox "Error buscando: " & Err.Description
+End Sub
+
+' === SELECCIONAR PRODUCTO DE LA LISTA ===
+Private Sub lstProductosAjuste_Click()
+    If Me.lstProductosAjuste.ListIndex > 0 Then
+        ' Obtener fila del producto
+        filaProductoActual = Val(Me.lstProductosAjuste.List(Me.lstProductosAjuste.ListIndex, 3))
+        
+        ' Mostrar información
+        Me.lblProductoEncontrado.Caption = "Producto: " & Me.lstProductosAjuste.List(Me.lstProductosAjuste.ListIndex, 1)
+        Me.lblPrecioActual.Caption = "Precio Actual: " & Me.lstProductosAjuste.List(Me.lstProductosAjuste.ListIndex, 2)
+        
+        ' Poner precio actual en el textbox
+        Me.txtNuevoPrecio.Text = Replace(Replace(Me.lstProductosAjuste.List(Me.lstProductosAjuste.ListIndex, 2), "$", ""), ",", "")
+        'Me.txtNuevoPrecio.Text = Replace(Replace(Me.lstProductosAjuste.List(Me.lstProductosAjuste.ListIndex, 2), "", ""), "", ".")
+        Me.txtNuevoPrecio.SetFocus
+        Me.txtNuevoPrecio.SelStart = 0
+        Me.txtNuevoPrecio.SelLength = Len(Me.txtNuevoPrecio.Text)
+    End If
+End Sub
+
+' === GUARDAR NUEVO PRECIO CON ENTER===
+
+Private Sub btnGuardarPrecio_Enter()
+    On Error GoTo ErrorHandler
+    
+    ' Verificar si hay un producto seleccionado en la lista
+    If Me.lstProductosAjuste.ListIndex <= 0 Then
+        MsgBox "Por favor seleccione un producto de la lista", vbExclamation
+        Exit Sub
+    End If
+    
+    ' Si no se ha guardado la fila, obtenerla de la lista
+    If filaProductoActual = 0 Then
+        filaProductoActual = Val(Me.lstProductosAjuste.List(Me.lstProductosAjuste.ListIndex, 3))
+    End If
+    
+    ' Verificar nuevamente
+    If filaProductoActual = 0 Then
+        MsgBox "Error: No se pudo identificar el producto", vbExclamation
+        Exit Sub
+    End If
+    
+    Dim nuevoPrecio As Double
+    nuevoPrecio = Val(Me.txtNuevoPrecio.Text)
+    
+    If nuevoPrecio <= 0 Then
+        MsgBox "Ingrese un precio válido mayor a 0", vbExclamation
+        Exit Sub
+    End If
+    
+    ' Confirmar cambio
+    Dim respuesta As VbMsgBoxResult
+    respuesta = MsgBox("¿Actualizar el precio de:" & vbCrLf & vbCrLf & _
+                       wsProductos.Cells(filaProductoActual, 2).Value & vbCrLf & vbCrLf & _
+                       "Precio anterior: " & Format(wsProductos.Cells(filaProductoActual, 6).Value, "$#,##0") & vbCrLf & _
+                       "Precio nuevo: " & Format(nuevoPrecio, "$#,##0"), _
+                       vbYesNo + vbQuestion, "Confirmar Cambio de Precio")
+    
+    If respuesta = vbYes Then
+        ' Guardar precio anterior
+        Dim precioAnterior As Double
+        precioAnterior = wsProductos.Cells(filaProductoActual, 6).Value
+        
+        ' Actualizar precio
+        wsProductos.Cells(filaProductoActual, 6).Value = nuevoPrecio
+        
+        ' Registro del cambio
+        wsProductos.Cells(filaProductoActual, 13).Value = "Cambio: " & Format(Date, "dd/mm/yyyy")
+        wsProductos.Cells(filaProductoActual, 14).Value = "De $" & Format(precioAnterior, "#,##0") & " a $" & Format(nuevoPrecio, "#,##0")
+        
+        MsgBox "[OK]Precio actualizado exitosamente" & vbCrLf & vbCrLf & _
+               "El nuevo precio se aplicará a las próximas ventas", vbInformation
+        
+        ' Limpiar
+        filaProductoActual = 0
+        Me.lblProductoEncontrado.Caption = "Producto: (ninguno seleccionado)"
+        Me.lblPrecioActual.Caption = "Precio Actual: $0"
+        Me.txtNuevoPrecio.Text = ""
+        Me.txtBuscarAjuste.Text = ""
+        Me.lstProductosAjuste.Clear
+        Me.txtBuscarAjuste.SetFocus
+    End If
+    
+    Exit Sub
+ErrorHandler:
+    MsgBox "Error al guardar: " & Err.Description, vbCritical
+End Sub
+
+' === GUARDAR NUEVO PRECIO ===
+
+Private Sub btnGuardarPrecio_Click()
+    On Error GoTo ErrorHandler
+    
+    ' Actualizar precio en la venta actual si existe
+    Dim i As Integer
+    For i = 0 To Me.lstVenta.ListCount - 1
+        ' Si el producto está en la venta actual
+    If Me.lstVenta.List(i, 0) = wsProductos.Cells(filaProductoActual, 1).Value Then
+        ' Actualizar el precio mostrado
+        Dim cantidad As Integer
+        cantidad = Val(Me.lstVenta.List(i, 2))
+        Me.lstVenta.List(i, 3) = Format(nuevoPrecio * cantidad, "$#,##0")
+    End If
+    Next i
+
+    ' Recalcular total
+    Call CalcularTotal
+    
+    
+    ' Verificar si hay un producto seleccionado en la lista
+    If Me.lstProductosAjuste.ListIndex <= 0 Then
+        MsgBox "Por favor seleccione un producto de la lista", vbExclamation
+        Exit Sub
+    End If
+    
+    ' Si no se ha guardado la fila, obtenerla de la lista
+    If filaProductoActual = 0 Then
+        filaProductoActual = Val(Me.lstProductosAjuste.List(Me.lstProductosAjuste.ListIndex, 3))
+    End If
+    
+    ' Verificar nuevamente
+    If filaProductoActual = 0 Then
+        MsgBox "Error: No se pudo identificar el producto", vbExclamation
+        Exit Sub
+    End If
+    
+    Dim nuevoPrecio As Double
+    nuevoPrecio = Val(Me.txtNuevoPrecio.Text)
+    
+    If nuevoPrecio <= 0 Then
+        MsgBox "Ingrese un precio válido mayor a 0", vbExclamation
+        Exit Sub
+    End If
+    
+    ' Confirmar cambio
+    Dim respuesta As VbMsgBoxResult
+    respuesta = MsgBox("¿Actualizar el precio de:" & vbCrLf & vbCrLf & _
+                       wsProductos.Cells(filaProductoActual, 2).Value & vbCrLf & vbCrLf & _
+                       "Precio anterior: " & Format(wsProductos.Cells(filaProductoActual, 6).Value, "$#,##0") & vbCrLf & _
+                       "Precio nuevo: " & Format(nuevoPrecio, "$#,##0"), _
+                       vbYesNo + vbQuestion, "Confirmar Cambio de Precio")
+    
+    If respuesta = vbYes Then
+        ' Guardar precio anterior
+        Dim precioAnterior As Double
+        precioAnterior = wsProductos.Cells(filaProductoActual, 6).Value
+        
+        ' Actualizar precio
+        wsProductos.Cells(filaProductoActual, 6).Value = nuevoPrecio
+        
+        ' Registro del cambio
+        wsProductos.Cells(filaProductoActual, 13).Value = "Cambio: " & Format(Date, "dd/mm/yyyy")
+        wsProductos.Cells(filaProductoActual, 14).Value = "De $" & Format(precioAnterior, "#,##0") & " a $" & Format(nuevoPrecio, "#,##0")
+        
+        MsgBox "[OK]Precio actualizado exitosamente" & vbCrLf & vbCrLf & _
+               "El nuevo precio se aplicará a las próximas ventas", vbInformation
+        
+        ' Limpiar
+        filaProductoActual = 0
+        Me.lblProductoEncontrado.Caption = "Producto: (ninguno seleccionado)"
+        Me.lblPrecioActual.Caption = "Precio Actual: $0"
+        Me.txtNuevoPrecio.Text = ""
+        Me.txtBuscarAjuste.Text = ""
+        Me.lstProductosAjuste.Clear
+        Me.txtBuscarAjuste.SetFocus
+    End If
+    
+    Exit Sub
+ErrorHandler:
+    MsgBox "Error al guardar: " & Err.Description, vbCritical
+End Sub
+
+' === VALIDAR SOLO NÚMEROS EN PRECIO ===
+Private Sub txtNuevoPrecio_KeyPress(ByVal KeyAscii As MSForms.ReturnInteger)
+    ' Solo permitir números y punto decimal
+    If Not (KeyAscii >= 48 And KeyAscii <= 57) And KeyAscii <> 46 And KeyAscii <> 8 Then
+        KeyAscii = 0
+    End If
+End Sub
+
+Private Sub btnDescRapido_Click()
+    If Me.lstVenta.ListCount = 0 Then Exit Sub
+    
+    Dim desc As String
+    desc = InputBox("Ingrese descuento:" & vbCrLf & _
+                   "Ej: 10% o 5000", "Descuento Rápido")
+    
+    If desc <> "" Then
+        Dim totalActual As Double
+        totalActual = Val(Replace(Replace(Me.lblTotal.Caption, "$", ""), ".", ""))
+        
+        If InStr(desc, "%") > 0 Then
+            Dim porcentaje As Double
+            porcentaje = Val(Replace(desc, "%", ""))
+            totalActual = totalActual - (totalActual * porcentaje / 100)
+        Else
+            totalActual = totalActual - Val(desc)
+        End If
+        
+        If totalActual < 0 Then totalActual = 0
+        
+        Me.lblTotal.Caption = Format(totalActual, "$#,##0")
+        Me.lblTotal.ForeColor = RGB(0, 128, 0) ' Verde para indicar descuento
+    End If
+End Sub
+'Private Sub btnEND_Click()
+'    If MsgBox("¿CERRAR EL PROGRAMA COMPLETAMENTE?", vbYesNo + vbQuestion) = vbYes Then
+'
+'        Call CerrarYGuardar
+'
+'
+'        Exit Sub
+'    End If
+'End Sub
+
+Private Sub btnEND_Click()
+    If MsgBox("¿CERRAR EL PROGRAMA Y CREAR BACKUP?", vbYesNo + vbQuestion) = vbYes Then
+        
+        ' Crear backup antes de cerrar
+        On Error Resume Next
+        Dim rutaBackup As String
+'        rutaBackup = "C:\Users\" & Environ("USERNAME") & "\Desktop\BackUpAlFinal\"
+        rutaBackup = "G:\Mi unidad\FARMACIA\BackupsCierreDiario\"
+        
+        If Dir(rutaBackup, vbDirectory) <> "" Then
+            ThisWorkbook.SaveCopyAs rutaBackup & "Backup_" & Format(Now, "ddmmyyyy_HHmmss") & ".xlsm"
+            MsgBox "Backup creado en el escritorio", vbInformation
+        End If
+        
+        ' Cerrar todo
+        ThisWorkbook.Save
+        Application.Quit
+    End If
+End Sub
+
+    Sub CerrarYGuardar()
+    Dim respuesta As Integer
+    
+    respuesta = MsgBox("¿Desea guardar los cambios y cerrar el sistema?", _
+                      vbYesNoCancel + vbQuestion, "Cerrar Sistema POS")
+    
+    Select Case respuesta
+        Case vbYes
+            ' Guardar y cerrar
+            ThisWorkbook.Save
+            Application.Quit
+            
+        Case vbNo
+            ' Cerrar sin guardar
+            ThisWorkbook.Saved = True
+            Application.Quit
+            
+        Case vbCancel
+            ' No hacer nada
+    End Select
+End Sub
+    
+  Private Sub btnIrCompras_Click()
+    On Error Resume Next
+    frmCompras.Show
+    AppActivate frmCompras.Caption
+End Sub
+
+Private Sub btnVerificarCompra_Click()
+    On Error Resume Next
+    If frmCompras.TieneCompraPendiente() Then
+        MsgBox "Hay una compra pendiente", vbInformation
+        frmCompras.Show
+    Else
+        MsgBox "No hay compras pendientes", vbInformation
+    End If
+End Sub
+
+' ========== BACKUP AUTOMÁTICO AL CERRAR ==========
+
+
+'Private Sub UserForm_QueryClose(Cancel As Integer, CloseMode As Integer)
+'    MsgBox "EVENTO QUERYCLOSE ACTIVADO", vbInformation, "PRUEBA"
+'
+'    If MsgBox("¿Cerrar el Sistema POS?", vbYesNo) = vbNo Then
+'        Cancel = True
+'    Else
+'        MsgBox "Intentando crear backup...", vbInformation
+'
+'        ' Backup super simple de prueba
+'        On Error Resume Next
+'        ThisWorkbook.SaveCopyAs "C:\Users\" & Environ("USERNAME") & "\Desktop\BackUpAlFinal\Test_" & Format(Now, "HHmmss") & ".xlsm"
+'
+'        If Err.Number = 0 Then
+'            MsgBox "Backup creado exitosamente", vbInformation
+'        Else
+'            MsgBox "Error: " & Err.Description, vbCritical
+'        End If
+'    End If
+'End Sub
+
+Private Sub UserForm_QueryClose(Cancel As Integer, CloseMode As Integer)
+
+     ' Atajo: Si presionas SHIFT al cerrar, sale sin backup
+    If GetAsyncKeyState(&H10) < 0 Then ' &H10 es la tecla SHIFT
+        ' Salir directo sin backup
+        Exit Sub
+    End If
+
+    ' Preguntar si desea cerrar
+    Dim respuesta As Integer
+    respuesta = MsgBox("¿Desea cerrar el Sistema POS?" & vbCrLf & _
+                      "Se creará un backup automático", _
+                      vbYesNo + vbQuestion, "Confirmar Cierre")
+    
+    If respuesta = vbNo Then
+        Cancel = True
+        Exit Sub
+    End If
+    
+    ' Intentar crear backup
+    On Error GoTo ErrorHandler
+    
+    ' Construir ruta usando el nombre de usuario actual
+    Dim rutaBackup As String
+'    rutaBackup = "C:\Users\" & Environ("USERNAME") & "\Desktop\BackUpAlFinal\"
+    rutaBackup = "G:\Mi unidad\FARMACIA\BackupsCierreDiario\"
+    
+    ' Verificar que la carpeta existe
+    If Dir(rutaBackup, vbDirectory) = "" Then
+        MsgBox "La carpeta de backup no existe: " & rutaBackup, vbExclamation
+        Exit Sub
+    End If
+    
+    ' Crear nombre único para el archivo
+    Dim nombreArchivo As String
+    nombreArchivo = "POS_Backup_" & Format(Date, "dd-mm-yyyy") & "_" & Format(Time, "HHmmss") & ".xlsm"
+    
+    ' Guardar primero los cambios actuales
+    ThisWorkbook.Save
+    
+    ' Crear la copia de backup
+    ThisWorkbook.SaveCopyAs rutaBackup & nombreArchivo
+    
+    ' Confirmar que se creó
+    MsgBox "Backup creado exitosamente en:" & vbCrLf & _
+           rutaBackup & nombreArchivo, vbInformation, "Backup Exitoso"
+    
+    Exit Sub
+    
+ErrorHandler:
+    MsgBox "Error al crear backup:" & vbCrLf & Err.Description & vbCrLf & _
+           "El sistema se cerrará sin backup", vbExclamation
+End Sub
+
+
+Sub CrearBackupAutomatico()
+    On Error Resume Next
+    
+    ' Intentar múltiples ubicaciones
+    Dim rutas(3) As String
+    Dim i As Integer
+    Dim backupExitoso As Boolean
+    
+    ' Opción 1: Escritorio
+    rutas(0) = Environ("USERPROFILE") & "\Desktop\BackupsPOS\"
+    
+    ' Opción 2: Documentos
+    rutas(1) = Environ("USERPROFILE") & "\Documents\BackupsPOS\"
+    
+    ' Opción 3: Google Drive (si existe)
+    rutas(2) = Environ("USERPROFILE") & "\Google Drive\BackupsCierreDiario\"
+    
+    ' Opción 4: Misma carpeta del archivo
+    rutas(3) = ThisWorkbook.Path & "\Backups\"
+    
+    ' Intentar guardar en alguna de las rutas
+    For i = 0 To 3
+        If Dir(rutas(i), vbDirectory) = "" Then
+            MkDir rutas(i)
+        End If
+        
+        If Dir(rutas(i), vbDirectory) <> "" Then
+            ' Guardar aquí
+            Dim nombreBackup As String
+            nombreBackup = "POS_Backup_" & Format(Now, "yyyymmdd_HHmmss") & ".xlsm"
+            
+            ThisWorkbook.SaveCopyAs rutas(i) & nombreBackup
+            
+            If Err.Number = 0 Then
+                backupExitoso = True
+                Exit For
+            End If
+        End If
+    Next i
+    
+    ' Notificación discreta en la barra de estado
+    If backupExitoso Then
+        Application.StatusBar = "Backup guardado exitosamente"
+        Application.Wait Now + TimeValue("00:00:02")
+        Application.StatusBar = ""
+    End If
+End Sub
+
+
+
+
+' Función para verificar permisos
+Sub MostrarAdministradorUsuarios()
+    Dim nivel As String
+    On Error Resume Next
+    nivel = ThisWorkbook.Names("NivelUsuario").RefersToRange.Value
+    
+    If nivel = "Administrador" Then
+        frmAdminUsuarios.Show
+    Else
+        MsgBox "No tiene permisos de administrador", vbExclamation, "Acceso Denegado"
+    End If
+End Sub
+
+
+
+Sub ConfigurarInterfazSegunNivel()
+    Dim nivel As String
+    On Error Resume Next
+    nivel = ThisWorkbook.Names("NivelUsuario").RefersToRange.Value
+    
+    ' Mostrar botón de administración solo para administradores
+    If nivel = "Administrador" Then
+        Me.btnAdminUsuarios.Visible = True
+    Else
+        Me.btnAdminUsuarios.Visible = False
+    End If
+End Sub
+
+' Función MEJORADA para configurar botones
+Sub ConfigurarBotonesSegunUsuario()
+    On Error GoTo ErrorHandler
+    
+    Dim nivelUsuario As String
+    Dim usuarioActual As String
+    
+    ' Obtener nivel de usuario de forma SEGURA
+    nivelUsuario = ObtenerNivelUsuario()
+    usuarioActual = ObtenerUsuarioActual()
+    
+    ' Verificar si el botón existe
+    If Not botonExiste("btnAdminUsuarios") Then
+        Exit Sub ' Si el botón no existe, salir
+    End If
+    
+    ' Mostrar botón SOLO si es Administrador
+    If nivelUsuario = "Administrador" Then
+        Me.btnAdminUsuarios.Visible = True
+        Me.btnAdminUsuarios.Caption = "Administrar Usuarios"
+    Else
+        Me.btnAdminUsuarios.Visible = False
+    End If
+    
+    Exit Sub
+    
+ErrorHandler:
+    ' En caso de error, ocultar el botón por seguridad
+    If botonExiste("btnAdminUsuarios") Then
+        Me.btnAdminUsuarios.Visible = False
+    End If
+End Sub
+
+' Función para obtener nivel de usuario
+Function ObtenerNivelUsuario() As String
+    On Error Resume Next
+    
+    ' Método 1: Desde Names
+    ObtenerNivelUsuario = ThisWorkbook.Names("NivelUsuario").RefersToRange.Value
+    If ObtenerNivelUsuario <> "" Then Exit Function
+    
+    ' Método 2: Desde celdas (ZZ2)
+    ObtenerNivelUsuario = ThisWorkbook.Sheets(1).Range("ZZ2").Value
+    If ObtenerNivelUsuario <> "" Then Exit Function
+    
+    ' Método 3: Desde celdas (AA2) - backup
+    ObtenerNivelUsuario = ThisWorkbook.Sheets(1).Range("AA2").Value
+    If ObtenerNivelUsuario <> "" Then Exit Function
+    
+    ' Método 4: Valor por defecto según usuario
+    Dim usuario As String
+    usuario = ObtenerUsuarioActual()
+    If usuario = "admin" Then
+        ObtenerNivelUsuario = "Administrador"
+    Else
+        ObtenerNivelUsuario = "Vendedor"
+    End If
+End Function
+
+Function ObtenerUsuarioActual() As String
+    On Error Resume Next
+    
+    ' Método 1: Desde Names
+    ObtenerUsuarioActual = ThisWorkbook.Names("UsuarioActual").RefersToRange.Value
+    If ObtenerUsuarioActual <> "" Then Exit Function
+    
+    ' Método 2: Desde celdas (ZZ1)
+    ObtenerUsuarioActual = ThisWorkbook.Sheets(1).Range("ZZ1").Value
+    If ObtenerUsuarioActual <> "" Then Exit Function
+    
+    ' Método 3: Desde celdas (AA1) - backup
+    ObtenerUsuarioActual = ThisWorkbook.Sheets(1).Range("AA1").Value
+    If ObtenerUsuarioActual <> "" Then Exit Function
+    
+    ' Método 4: Desde registro Windows
+    ObtenerUsuarioActual = GetSetting("SistemaPOS", "Login", "Usuario", "")
+    If ObtenerUsuarioActual <> "" Then Exit Function
+    
+    ' Método 5: Por defecto
+    ObtenerUsuarioActual = "admin"
+End Function
+
+' Función para verificar si un botón existe
+Function botonExiste(nombreBoton As String) As Boolean
+    On Error Resume Next
+    Dim ctrl As Object
+    Set ctrl = Me.Controls(nombreBoton)
+    botonExiste = (Err.Number = 0)
+    Err.Clear
+End Function
+
+
+' Evento del botón Administrar Usuarios
+Private Sub btnAdminUsuarios_Click()
+    On Error GoTo ErrorHandler
+    
+    ' Verificar nuevamente que es administrador
+    If ObtenerNivelUsuario() = "Administrador" Then
+        frmAdminUsuarios.Show
+    Else
+        MsgBox "No tiene permisos de administrador", vbExclamation
+    End If
+    
+    Exit Sub
+    
+ErrorHandler:
+    MsgBox "Error al abrir administración: " & Err.Description, vbCritical
+End Sub
+
+' Botón para cambiar contraseña
+Private Sub btnCambiarPassword_Click()
+    frmCambiarPassword.Show
+End Sub
+
+' Botón para cambiar de usuario
+Private Sub btnCambiarUsuario_Click()
+    CambiarDeUsuario
+End Sub
+
+Sub CambiarDeUsuario()
+    Dim respuesta As Integer
+    respuesta = MsgBox("¿Está seguro que desea cambiar de usuario?", vbYesNo + vbQuestion, "Cambiar Usuario")
+    
+    If respuesta = vbYes Then
+        ' Limpiar la sesión actual
+        On Error Resume Next
+        ThisWorkbook.Names("UsuarioActual").Delete
+        ThisWorkbook.Names("NivelUsuario").Delete
+        ThisWorkbook.Sheets(1).Range("ZZ1:ZZ2").ClearContents
+        ThisWorkbook.Sheets(1).Range("AA1:AA2").ClearContents
+        
+        ' Cerrar formulario actual y abrir login
+        Unload Me
+        frmLogin.Show
+    End If
+End Sub
+
+
+' ========== MEJORAS VISUALES DEL SISTEMA ==========
+Sub AplicarTemaVisual()
+    On Error Resume Next ' Por si algún control no existe
+    
+    ' === COLORES BASE ===
+    Dim colorVerde As Long: colorVerde = RGB(46, 204, 113)
+    Dim colorAzul As Long: colorAzul = RGB(52, 152, 219)
+    Dim colorRojo As Long: colorRojo = RGB(231, 76, 60)
+    Dim colorGris As Long: colorGris = RGB(236, 240, 241)
+    Dim colorAmarillo As Long: colorAmarillo = RGB(255, 235, 59)
+    
+    ' === FONDO GENERAL ===
+    Me.BackColor = colorGris
+    
+    ' === BOTONES PRINCIPALES (solo si existen) ===
+    If botonExiste("btnFinalizar") Then
+        With Me.btnFinalizar
+            .BackColor = RGB(46, 204, 113)
+            .ForeColor = RGB(255, 255, 255)
+            .Font.Bold = True
+            .Font.Size = 11
+        End With
+    End If
+    
+    If botonExiste("btnAgregar") Then
+        With Me.btnAgregar
+            .BackColor = RGB(52, 152, 219)
+            .ForeColor = RGB(255, 255, 255)
+            .Font.Bold = True
+        End With
+    End If
+    
+    If botonExiste("btnEliminar") Then
+        With Me.btnEliminar
+            .BackColor = RGB(255, 200, 200)
+            .ForeColor = RGB(150, 0, 0)
+            .Font.Bold = True
+        End With
+    End If
+    
+    ' Antes decía btnCancelarVenta. Usaremos btnLimpiar como “cancelar”.
+    If botonExiste("btnLimpiar") Then
+        With Me.btnLimpiar
+            .BackColor = RGB(231, 76, 60)     ' rojo
+            .ForeColor = RGB(255, 255, 255)
+            .Font.Bold = True
+            .Caption = "[X] Cancelar venta"
+        End With
+    End If
+    
+    If botonExiste("lblTotal") Then
+        With Me.lblTotal
+            .BackColor = RGB(255, 235, 59)
+            .Font.Size = 14
+            .Font.Bold = True
+            .BorderStyle = fmBorderStyleSingle
+        End With
+    End If
+
+    
+    ' === LABEL TOTAL - MÁS DESTACADO ===
+    If Not lblTotal Is Nothing Then
+        lblTotal.BackColor = colorAmarillo
+        lblTotal.Font.Size = 14
+        lblTotal.Font.Bold = True
+        lblTotal.BorderStyle = fmBorderStyleSingle
+    End If
+    
+    ' === LABEL VENTAS DEL DÍA ===
+    If Not lblVentasHoy Is Nothing Then
+        lblVentasHoy.BackColor = RGB(0, 176, 80)
+        lblVentasHoy.ForeColor = RGB(255, 255, 255)
+        lblVentasHoy.Font.Bold = True
+        lblVentasHoy.Font.Size = 11
+    End If
+    
+    ' === CAJAS DE TEXTO ===
+    If Not txtBuscar Is Nothing Then
+        txtBuscar.BackColor = RGB(255, 255, 230) ' Amarillo muy suave
+        txtBuscar.Font.Size = 11
+    End If
+    
+    If Not txtCantidad Is Nothing Then
+        txtCantidad.BackColor = RGB(240, 255, 240) ' Verde muy suave
+    End If
+    
+    ' === LISTBOXES ===
+    If Not lstProductos Is Nothing Then
+        lstProductos.BackColor = RGB(250, 250, 250)
+        lstProductos.Font.Size = 10
+    End If
+    
+    If Not lstVenta Is Nothing Then
+        lstVenta.BackColor = RGB(255, 255, 250)
+        lstVenta.Font.Size = 10
+    End If
+    
+    ' === APLICAR A TODOS LOS BOTONES RESTANTES ===
+    Dim ctrl As Control
+    For Each ctrl In Me.Controls
+        If TypeName(ctrl) = "CommandButton" Then
+            ' Si el botón no tiene color específico
+            If ctrl.BackColor = &H8000000F Then ' Color por defecto
+                ctrl.BackColor = RGB(200, 200, 200)
+                ctrl.Font.Bold = True
+            End If
+        End If
+    Next ctrl
+    
+    On Error GoTo 0
+End Sub
+
+Sub AgregarIconosBotones()
+    On Error Resume Next
+    
+    ' Usar texto simple en lugar de símbolos
+    btnFinalizar.Caption = "[OK] FINALIZAR"
+    btnEliminar.Caption = "[X] Eliminar"
+    btnLimpiar.Caption = "[<] Limpiar"
+    btnHistorial.Caption = "[=] Historial"
+    btnBuscar.Caption = "[?] Buscar"
+    btnAgregar.Caption = "[+] Agregar"
+    
+    On Error GoTo 0
+End Sub
+
+Sub ActualizarInventarioRapido()
+    Dim codigo As String
+    Dim cantidadReal As Integer
+    Dim producto As String
+    
+    ' Si hay un producto seleccionado, usar ese
+    If Me.lstProductos.ListIndex >= 0 Then
+        codigo = Me.lstProductos.List(Me.lstProductos.ListIndex, 0)
+        producto = Me.lstProductos.List(Me.lstProductos.ListIndex, 1)
+        
+        cantidadReal = Val(InputBox("Inventario físico real de:" & vbCrLf & _
+                                    producto & vbCrLf & vbCrLf & _
+                                    "Cantidad en estante:", "Actualizar Inventario", "0"))
+    Else
+        codigo = InputBox("Código del producto:")
+        If codigo = "" Then Exit Sub
+        cantidadReal = Val(InputBox("Cantidad real en estante:"))
+    End If
+    
+    ' Buscar y actualizar en Hoja1
+    Dim fila As Long
+    For fila = 3 To wsProductos.Cells(wsProductos.Rows.Count, "A").End(xlUp).Row
+        If wsProductos.Cells(fila, 1).Value = codigo Then
+            Dim stockAnterior As Integer
+            stockAnterior = wsProductos.Cells(fila, 5).Value
+            
+            ' Actualizar stock
+            wsProductos.Cells(fila, 5).Value = cantidadReal
+            
+            ' Registrar ajuste
+            wsProductos.Cells(fila, 15).Value = "Inv.Físico: " & Format(Now, "dd/mm hh:mm")
+            wsProductos.Cells(fila, 16).Value = "Antes:" & stockAnterior & " Ahora:" & cantidadReal
+            
+            MsgBox "? INVENTARIO ACTUALIZADO" & vbCrLf & vbCrLf & _
+                   "Producto: " & wsProductos.Cells(fila, 2).Value & vbCrLf & _
+                   "Stock anterior: " & stockAnterior & vbCrLf & _
+                   "Stock real: " & cantidadReal & vbCrLf & _
+                   "Diferencia: " & (cantidadReal - stockAnterior), vbInformation
+            
+            ' Recargar productos
+            Call CargarProductos
+            Exit Sub
+        End If
+    Next fila
+    
+    MsgBox "Producto no encontrado", vbExclamation
+End Sub
+
+Private Sub btnModoInventario_Click()
+    ' Activar/Desactivar modo inventario
+    ModoInventario = Not ModoInventario
+    
+    If ModoInventario Then
+        Me.Caption = "SISTEMA POS - [MODO INVENTARIO ACTIVO]"
+        Me.BackColor = RGB(255, 245, 245) ' Fondo rosado claro
+        btnModoInventario.BackColor = RGB(255, 0, 0)
+        btnModoInventario.Caption = "[INV] DESACTIVAR"
+        
+        MsgBox "MODO INVENTARIO ACTIVADO" & vbCrLf & vbCrLf & _
+               "• Al vender cada producto se verificará stock" & vbCrLf & _
+               "• Se pedirá confirmar cantidad real" & vbCrLf & _
+               "• Los ajustes se registrarán automáticamente", vbInformation
+    Else
+        Me.Caption = "SISTEMA PUNTO DE VENTA"
+        Me.BackColor = RGB(236, 240, 241) ' Color normal
+        btnModoInventario.BackColor = RGB(200, 200, 200)
+        btnModoInventario.Caption = "Modo Inventario"
+        
+        MsgBox "Modo inventario desactivado", vbInformation
+    End If
+End Sub
+
+Sub ImprimirUltimaFacturaDirecto()
+    On Error GoTo ErrorHandler
+    
+    Dim ultimaFactura As Long
+    Dim ultimaFila As Long
+    
+    ultimaFila = wsVentas.Cells(wsVentas.Rows.Count, "C").End(xlUp).Row
+    
+    If ultimaFila < 2 Then
+        MsgBox "No hay ventas registradas", vbInformation, "Sin Facturas"
+        Exit Sub
+    End If
+    
+    ultimaFactura = wsVentas.Cells(ultimaFila, 3).Value
+    
+    If MsgBox("¿Imprimir factura FAPOS" & Format(ultimaFactura, "00000") & "?", _
+              vbYesNo + vbQuestion, "Imprimir Última") = vbNo Then Exit Sub
+    
+    Application.ScreenUpdating = False
+    
+    Dim wsTemp As Worksheet
+    Set wsTemp = ThisWorkbook.Sheets.Add
+    wsTemp.Name = "IMP_" & Format(Now, "hhmmss")
+    
+    Call GenerarFacturaTirilla(wsTemp, ultimaFactura)
+    
+    ' IMPRIMIR CON MANEJO DE ERROR
+    On Error Resume Next
+    wsTemp.PrintOut Copies:=1
+    
+    ' Esperar un poquito
+    Application.Wait Now + TimeValue("00:00:01")
+    
+    ' Borrar hoja temporal
+    Application.DisplayAlerts = False
+    wsTemp.Delete
+    Application.DisplayAlerts = True
+    
+    Application.ScreenUpdating = True
+    
+    ' Mensaje simple
+    MsgBox "Listo", vbInformation, , 1
+    
+    Exit Sub
+    
+ErrorHandler:
+    Application.ScreenUpdating = True
+    Application.DisplayAlerts = True
+    On Error Resume Next
+    wsTemp.Delete
+    ' No mostrar error, solo un mensaje simple
+    MsgBox "Verificar impresora", vbInformation
+End Sub
+
+' En cualquier control que tenga el foco (como txtBuscar)
+'Private Sub txtBuscar_KeyDown(ByVal KeyCode As MSForms.ReturnInteger, ByVal Shift As Integer)
+'    If KeyCode = vbKeyF12 Then
+'        Call ImprimirUltimaFacturaDirecto
+'        KeyCode = 0 ' Cancelar el evento
+'    End If
+'
+'    If KeyCode = vbKeyF4 Then
+'        Call FinalizarVentaCompleta
+'        KeyCode = 0 ' Cancelar el evento
+'    End If
+''    FinalizarVentaCompleta
+'
+'End Sub
+
+' ============================================
+' ATAJOS EN CADA CONTROL PRINCIPAL
+' ============================================
+
+' En txtBuscar (donde está el scanner)
+Private Sub txtBuscar_KeyDown(ByVal KeyCode As MSForms.ReturnInteger, ByVal Shift As Integer)
+    Select Case KeyCode
+        Case vbKeyF4
+            Call btnFinalizar_Click
+            KeyCode = 0
+            
+'        Case vbKeyF5
+'            Call CargarProductos
+'            MsgBox "Lista actualizada", vbInformation, , 1
+'            KeyCode = 0
+'
+        Case vbKeyF12
+            Call ImprimirUltimaFacturaDirecto
+            KeyCode = 0
+    End Select
+End Sub
+
+' En txtCantidad
+Private Sub txtCantidad_KeyDown(ByVal KeyCode As MSForms.ReturnInteger, ByVal Shift As Integer)
+    Select Case KeyCode
+        Case vbKeyF4
+            Call btnFinalizar_Click
+            KeyCode = 0
+            
+        Case vbKeyF5
+            Call CargarProductos
+            MsgBox "Lista actualizada", vbInformation, , 1
+            KeyCode = 0
+    End Select
+End Sub
+
+' En lstProductos
+Private Sub lstProductos_KeyDown(ByVal KeyCode As MSForms.ReturnInteger, ByVal Shift As Integer)
+    Select Case KeyCode
+        Case vbKeyF4
+            Call btnFinalizar_Click
+            KeyCode = 0
+            
+        Case vbKeyF5
+            Call CargarProductos
+            MsgBox "Lista actualizada", vbInformation, , 1
+            KeyCode = 0
+    End Select
+End Sub
+
+' En lstVenta
+Private Sub lstVenta_KeyDown(ByVal KeyCode As MSForms.ReturnInteger, ByVal Shift As Integer)
+    Select Case KeyCode
+        Case vbKeyF4
+            Call btnFinalizar_Click
+            KeyCode = 0
+            
+        Case vbKeyF5
+            Call CargarProductos
+            MsgBox "Lista actualizada", vbInformation, , 1
+            KeyCode = 0
+    End Select
+End Sub
+
+' En cmbCliente
+Private Sub cmbCliente_KeyDown(ByVal KeyCode As MSForms.ReturnInteger, ByVal Shift As Integer)
+    Select Case KeyCode
+        Case vbKeyF4
+            Call btnFinalizar_Click
+            KeyCode = 0
+    End Select
+End Sub
+
+Private Sub btnImprimirUltima_Click()
+    Call ImprimirUltimaFacturaDirecto
+End Sub
+
+' Carga todos los productos a un array 2D (rápido)
+Private Sub CargarCatalogoEnMemoria()
+    Dim ult As Long
+
+    ' Si por alguna razón aún no está seteada, la asigno aquí de respaldo
+    If wsProductos Is Nothing Then
+        Set wsProductos = ThisWorkbook.Worksheets("Hoja1") ' <-- mismo nombre que arriba
+    End If
+
+    With wsProductos
+        ult = .Cells(.Rows.Count, "A").End(xlUp).Row
+        If ult < 3 Then
+            catArr = Empty
+            catCargado = True
+            Exit Sub
+        End If
+        catArr = .Range("A3:G" & ult).Value
+        catCargado = True
+    End With
+End Sub
+
+
+' Llena lstProductos desde catArr, aplicando un filtro opcional
+' - filtro se busca en CÓDIGO (col A) y DESCRIPCIÓN (col B)
+Private Sub PintarLista(Optional ByVal filtro As String = "")
+    Dim i As Long, n As Long, cap As Long
+    Dim f As String, mostrarTodo As Boolean
+    Dim tmp() As Variant
+
+    If Not catCargado Then CargarCatalogoEnMemoria
+
+    Me.lstProductos.Clear
+    Me.lstProductos.ColumnCount = 4
+    Me.lstProductos.ColumnWidths = "80;300;80;60"
+
+    If IsEmpty(catArr) Then Exit Sub
+
+    f = Up(Trim$(filtro))
+    mostrarTodo = (Len(f) = 0)
+
+    ' ---------- PASADA 1: contar coincidencias ----------
+    n = 0
+    cap = UBound(catArr, 1)
+
+    If mostrarTodo Then
+        If cap > LIMITE_LISTADO Then cap = LIMITE_LISTADO
+        n = cap
+    Else
+        For i = 1 To UBound(catArr, 1)
+            If InStr(1, Up(catArr(i, 1)) & " " & Up(catArr(i, 2)), f) > 0 Then
+                n = n + 1
+            End If
+        Next i
+        If n = 0 Then Exit Sub
+    End If
+
+    ' ---------- PASADA 2: dimensionar exacto y llenar ----------
+    ReDim tmp(1 To n, 1 To 4)
+
+    Dim k As Long: k = 0
+    If mostrarTodo Then
+        For i = 1 To n
+            k = k + 1
+            tmp(k, 1) = Nz(catArr(i, 1))                       ' Código
+            tmp(k, 2) = Nz(catArr(i, 2))                       ' Descripción
+            tmp(k, 3) = Format$(Nz(catArr(i, 6), 0), "$#,##0") ' Precio (F)
+            tmp(k, 4) = Nz(catArr(i, 5), "0")                  ' Stock  (E)
+        Next i
+    Else
+        For i = 1 To UBound(catArr, 1)
+            If InStr(1, Up(catArr(i, 1)) & " " & Up(catArr(i, 2)), f) > 0 Then
+                k = k + 1
+                tmp(k, 1) = Nz(catArr(i, 1))
+                tmp(k, 2) = Nz(catArr(i, 2))
+                tmp(k, 3) = Format$(Nz(catArr(i, 6), 0), "$#,##0")
+                tmp(k, 4) = Nz(catArr(i, 5), "0")
+                ' sin límite cuando hay filtro; si quieres, puedes cortar con If k>=LIMITE_LISTADO Then Exit For
+            End If
+        Next i
+    End If
+
+    Me.lstProductos.List = tmp
+    
+    ' Auto-seleccionar primer resultado y mostrar precio en txtValorUnd
+    If Me.lstProductos.ListCount > 0 Then
+        Me.lstProductos.ListIndex = 0
+        On Error Resume Next
+        Me.txtValorUnd.Text = Me.lstProductos.List(0, 2)
+        On Error GoTo 0
+    End If
+    
+'    ' === SINCRONIZAR lstNombre con lstProductos (opcional) ===
+'    On Error Resume Next
+'    Me.lstNombre.Clear
+'    Dim i As Long
+'    For i = 0 To Me.lstProductos.ListCount - 1
+'        Me.lstNombre.AddItem Me.lstProductos.List(i, 1)  ' descripción
+'    Next i
+'    If Me.lstNombre.ListCount > 0 Then Me.lstNombre.ListIndex = 0
+'    On Error GoTo 0
+
+    
+End Sub
+
+
+Private Sub txtBuscar_Change()
+    ' cada vez que cambie el texto, filtra
+    PintarLista Me.txtBuscar.Text
+End Sub
+
+
+' Llamable desde Compras
+Public Sub RefrescarCatalogo()
+    catCargado = False
+    CargarCatalogoEnMemoria
+    PintarLista Me.txtBuscar.Text   ' respeta el filtro que el usuario tenga escrito
+End Sub
+

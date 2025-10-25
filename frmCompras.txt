@@ -1,0 +1,937 @@
+' ==================================================
+' MÓDULO DE COMPRAS COMPLETO
+' ==================================================
+
+Option Explicit
+
+' Variables globales
+Dim wsProductos As Worksheet
+Dim wsCompras As Worksheet
+Dim wsProveedores As Worksheet
+Dim numeroCompra As Long
+Dim ProductoNuevo As Boolean
+Dim UltimoTextBoxSeleccionado As String
+' ==================================================
+' FUNCIÓN GENERAL PARA SELECCIONAR TODO EL TEXTO
+' ==================================================
+Private Sub SeleccionarTodo(txtBox As MSForms.TextBox)
+    With txtBox
+        .SelStart = 0
+        .SelLength = Len(.Text)
+    End With
+End Sub
+
+
+
+
+
+
+
+
+Private Sub UserForm_Initialize()
+    On Error GoTo ErrorHandler
+    
+    
+    
+    With Me.btnMaximizar
+        .Caption = "MAXIMIZAR"  ' Símbolo de ventana
+'        .Font.Size = 10
+'        .Width = 30
+'        .Height = 20
+'        .Top = 5
+'        .Left = Me.Width - 50  ' Esquina superior derecha
+    End With
+
+    ' AGREGAR ESTAS LÍNEAS PARA CENTRAR:
+    Me.StartUpPosition = 0
+    Me.Left = (Application.Width - Me.Width) / 2
+'    Me.Top = (Application.Height - Me.Height) / 2
+
+    ' Configurar hojas
+    Set wsProductos = ThisWorkbook.Sheets("Hoja1")
+    Set wsProveedores = ThisWorkbook.Sheets("Proveedores")
+
+    ' AGREGAR SCROLL:
+    With Me
+        .ScrollBars = fmScrollBarsBoth  ' Barras horizontal y vertical
+        .ScrollHeight = 700  ' Alto total del contenido
+        .ScrollWidth = 900   ' Ancho total del contenido
+        .KeepScrollBarsVisible = fmScrollBarsBoth  ' Siempre visibles
+    End With
+    
+    
+    
+    ' Crear hoja Compras si no existe
+    On Error Resume Next
+    Set wsCompras = ThisWorkbook.Sheets("Compras")
+    If wsCompras Is Nothing Then
+        Set wsCompras = ThisWorkbook.Sheets.Add
+        wsCompras.Name = "Compras"
+        ' Crear encabezados
+        With wsCompras.Range("A1:O1")
+            .Value = Array("Fecha", "Hora", "No.Compra", "Proveedor", "Código", _
+                          "Producto", "Cantidad", "P.Unitario", "Subtotal", "Lote", _
+                          "Descuento%", "Total c/Desc", "Unidad", "P.Venta", "Ult.Costo")
+            .Font.Bold = True
+            .Interior.Color = RGB(200, 200, 200)
+        End With
+    End If
+    On Error GoTo ErrorHandler
+    
+    ' Obtener número de compra
+    If wsCompras.Cells(wsCompras.Rows.Count, "C").End(xlUp).Row > 1 Then
+        numeroCompra = wsCompras.Cells(wsCompras.Rows.Count, "C").End(xlUp).Value + 1
+    Else
+        numeroCompra = 1
+    End If
+    
+    ' Configurar formulario
+    Me.Caption = "MÓDULO DE COMPRAS - Compra #" & numeroCompra
+    Me.Width = 750
+    Me.Height = 650
+    
+    ' Inicializar controles
+    Call ConfigurarControles
+    Call CargarProveedores
+    Call CargarProductos
+    Call LimpiarFormulario
+    
+    ' Fecha y hora actuales
+    Me.txtFecha.Text = Format(Date, "dd/mm/yyyy")
+    Me.txtHora.Text = Format(Time, "hh:mm:ss")
+    Me.txtNumCompra.Text = numeroCompra
+    Me.txtLote.Text = "LOTE-" & Format(Date, "yyyymmdd") & "-" & numeroCompra
+    
+    
+     ' Configurar el label de subtotal
+    With Me.lblSubtotalTEST
+        .Caption = "SUBTOTAL SIN DESCUENTOS: $0"
+        .Font.Size = 14
+        .Font.Bold = True
+        .ForeColor = RGB(0, 0, 255)     ' Azul rey
+        .BackColor = RGB(255, 224, 255)  ' Rosa pálido
+        .TextAlign = fmTextAlignCenter
+        .BorderStyle = fmBorderStyleSingle
+        .BorderColor = RGB(0, 0, 200)    ' Borde azul oscuro
+    End With
+    
+    Exit Sub
+'
+'      ' Configurar el label de subtotal
+'    With Me.lblSubtotalCarrito
+'        .Caption = "SUBTOTAL SIN DESCUENTOS: $0"
+'        .Font.Size = 14
+'        .Font.Bold = True
+'        .ForeColor = RGB(0, 0, 255)     ' Azul rey
+'        .BackColor = RGB(255, 224, 255)  ' Rosa pálido
+'        .TextAlign = fmTextAlignCenter
+'        .BorderStyle = fmBorderStyleSingle
+'        .BorderColor = RGB(0, 0, 200)    ' Borde azul oscuro
+'    End With
+'
+'    ' Inicializar el label de subtotal
+'    Me.lblSubtotalCarrito.Caption = "SUBTOTAL SIN DESCUENTOS: $0"
+    
+ErrorHandler:
+    MsgBox "Error al inicializar: " & Err.Description
+End Sub
+
+Private Sub btnMaximizar_Click()
+    Static estaMaximizado As Boolean
+    
+    If Not estaMaximizado Then
+        Me.Width = Application.Width * 0.95
+        Me.Height = Application.Height * 0.95
+        Me.Left = Application.Width * 0.025
+        Me.Top = Application.Height * 0.025
+        Me.btnMaximizar.Caption = "MIN"  ' Símbolo restaurar
+        
+        ' Mover el botón a nueva posición
+'        Me.btnMaximizar.Left = Me.Width - 50
+        estaMaximizado = True
+    Else
+        Me.Width = 850
+        Me.Height = 650
+        Me.Left = (Application.Width - Me.Width) / 2
+        Me.Top = (Application.Height - Me.Height) / 2
+        Me.btnMaximizar.Caption = "MAX"  ' Símbolo maximizar
+        
+        ' Mover el botón
+'        Me.btnMaximizar.Left = Me.Width - 50
+        estaMaximizado = False
+    End If
+End Sub
+
+
+Sub ConfigurarControles()
+    ' Configurar ListBox de productos
+    With Me.lstProductosBuscar
+        .ColumnCount = 5
+        .ColumnWidths = "60;200;60;50;60"
+    End With
+    
+    ' Configurar ListBox del carrito
+    With Me.lstCarrito
+        .ColumnCount = 10
+        .ColumnWidths = "50;150;50;60;60;40;70;40;60;60"
+    End With
+    
+    ' Valores predeterminados
+    Me.txtCantidad.Text = "1"
+    Me.txtDescuento.Text = "0"
+    Me.cmbUnidad.List = Array("UND", "CAJA", "SOBRE", "PAQUETE", "KG", "GRAMO", "LITRO")
+    Me.cmbUnidad.ListIndex = 0
+    
+    ' Bloquear campos automáticos
+    Me.txtFecha.Locked = True
+    Me.txtHora.Locked = True
+    Me.txtNumCompra.Locked = True
+    Me.txtSubtotal.Locked = True
+    Me.txtTotalConDesc.Locked = True
+    Me.txtTotalCompra.Locked = True
+End Sub
+
+
+
+
+' ==================================================
+' CARGA DE DATOS
+' ==================================================
+
+Sub CargarProveedores()
+    Me.cmbProveedor.Clear
+    
+    If wsProveedores Is Nothing Then Exit Sub
+    
+    Dim fila As Long
+    For fila = 2 To wsProveedores.Cells(wsProveedores.Rows.Count, "A").End(xlUp).Row
+        If wsProveedores.Cells(fila, 3).Value <> "" Then ' Columna 3 ahora es Nombre
+            ' Mostrar: Nombre - NIT
+            Me.cmbProveedor.AddItem wsProveedores.Cells(fila, 3).Value & " - " & wsProveedores.Cells(fila, 2).Value
+        End If
+    Next fila
+End Sub
+
+Sub CargarProductos()
+    Dim ult As Long, arr As Variant, i&, idx As Integer
+    With wsProductos ' Hoja1
+        ult = .Cells(.Rows.Count, "A").End(xlUp).Row
+        If ult < 3 Then Exit Sub
+        arr = .Range("A3:F" & ult).Value ' lee todo de una
+    End With
+
+    Me.lstProductosBuscar.Clear
+    ' Encabezados "tipo listview"
+    Me.lstProductosBuscar.AddItem
+    Me.lstProductosBuscar.List(0, 0) = "CÓDIGO"
+    Me.lstProductosBuscar.List(0, 1) = "PRODUCTO"
+    Me.lstProductosBuscar.List(0, 2) = "COSTO"
+    Me.lstProductosBuscar.List(0, 3) = "STOCK"
+    Me.lstProductosBuscar.List(0, 4) = "P.VENTA"
+
+    For i = 1 To UBound(arr, 1)
+        Me.lstProductosBuscar.AddItem
+        idx = Me.lstProductosBuscar.ListCount - 1
+        Me.lstProductosBuscar.List(idx, 0) = arr(i, 1)
+        Me.lstProductosBuscar.List(idx, 1) = arr(i, 2)
+        Me.lstProductosBuscar.List(idx, 2) = Format(arr(i, 4), "$#,##0")
+        Me.lstProductosBuscar.List(idx, 3) = arr(i, 5)
+        Me.lstProductosBuscar.List(idx, 4) = Format(arr(i, 6), "$#,##0")
+        If idx > 300 Then Exit For ' seguridad para PCs lentos
+    Next i
+End Sub
+
+
+' ==================================================
+' BÚSQUEDA Y SELECCIÓN
+' ==================================================
+
+Private Sub txtBuscar_Change()
+    BuscarProducto
+End Sub
+
+Sub BuscarProducto()
+    Dim busqueda As String
+    busqueda = UCase(Trim(Me.txtBuscar.Text))
+    
+    Me.lstProductosBuscar.Clear
+    
+    ' Encabezados
+    Me.lstProductosBuscar.AddItem
+    Me.lstProductosBuscar.List(0, 0) = "CÓDIGO"
+    Me.lstProductosBuscar.List(0, 1) = "PRODUCTO"
+    Me.lstProductosBuscar.List(0, 2) = "COSTO"
+    Me.lstProductosBuscar.List(0, 3) = "STOCK"
+    Me.lstProductosBuscar.List(0, 4) = "P.VENTA"
+    
+    If busqueda = "" Then
+        Call CargarProductos
+        Exit Sub
+    End If
+    
+    Dim fila As Long
+    For fila = 3 To wsProductos.Cells(wsProductos.Rows.Count, "A").End(xlUp).Row
+        If InStr(1, UCase(wsProductos.Cells(fila, 1).Value), busqueda) > 0 Or _
+           InStr(1, UCase(wsProductos.Cells(fila, 2).Value), busqueda) > 0 Then
+            
+            Me.lstProductosBuscar.AddItem
+            Dim idx As Integer
+            idx = Me.lstProductosBuscar.ListCount - 1
+            
+            Me.lstProductosBuscar.List(idx, 0) = wsProductos.Cells(fila, 1).Value
+            Me.lstProductosBuscar.List(idx, 1) = wsProductos.Cells(fila, 2).Value
+            Me.lstProductosBuscar.List(idx, 2) = Format(wsProductos.Cells(fila, 4).Value, "$#,##0")
+            Me.lstProductosBuscar.List(idx, 3) = wsProductos.Cells(fila, 5).Value
+            Me.lstProductosBuscar.List(idx, 4) = Format(wsProductos.Cells(fila, 6).Value, "$#,##0")
+        End If
+    Next fila
+    
+    ' Si no encuentra, preguntar si crear nuevo
+    If Me.lstProductosBuscar.ListCount = 1 And Len(busqueda) > 2 Then
+        Me.lblNuevoProducto.Caption = "Producto no encontrado. Use botón 'Crear Nuevo'"
+        Me.lblNuevoProducto.ForeColor = RGB(255, 0, 0)
+        Me.btnCrearProducto.Enabled = True
+    Else
+        Me.lblNuevoProducto.Caption = ""
+        Me.btnCrearProducto.Enabled = False
+    End If
+End Sub
+
+Private Sub lstProductosBuscar_Click()
+    If Me.lstProductosBuscar.ListIndex > 0 Then
+        ' Cargar datos del producto seleccionado
+        Me.txtCodigo.Text = Me.lstProductosBuscar.List(Me.lstProductosBuscar.ListIndex, 0)
+        Me.txtProducto.Text = Me.lstProductosBuscar.List(Me.lstProductosBuscar.ListIndex, 1)
+        
+        ' Cargar último costo
+        Dim costo As String
+        costo = Me.lstProductosBuscar.List(Me.lstProductosBuscar.ListIndex, 2)
+        costo = Replace(costo, "$", "")
+        costo = Replace(costo, ".", "")
+        Me.txtPrecioUnitario.Text = Val(costo)
+        
+        ' Cargar precio de venta
+        Dim pventa As String
+        pventa = Me.lstProductosBuscar.List(Me.lstProductosBuscar.ListIndex, 4)
+        pventa = Replace(pventa, "$", "")
+        pventa = Replace(pventa, ".", "")
+        Me.txtPrecioVenta.Text = Val(pventa)
+        
+        Me.txtUltCosto.Text = Me.lstProductosBuscar.List(Me.lstProductosBuscar.ListIndex, 2)
+        
+        ProductoNuevo = False
+        Me.txtCantidad.SetFocus
+    End If
+End Sub
+
+' ==================================================
+' CREAR PRODUCTO NUEVO
+' ==================================================
+
+Private Sub btnCrearProducto_Click()
+    CrearProductoNuevo
+End Sub
+
+Sub CrearProductoNuevo()
+    If Trim(Me.txtBuscar.Text) = "" Then
+        MsgBox "Ingrese nombre del producto nuevo"
+        Exit Sub
+    End If
+    
+    ' Generar código automático
+    Dim nuevoCodigo As String
+    Dim ultimaFila As Long
+    ultimaFila = wsProductos.Cells(wsProductos.Rows.Count, "A").End(xlUp).Row
+    nuevoCodigo = "PROD" & Format(ultimaFila - 1, "0000")
+    
+    ' Llenar campos
+'    Me.txtCodigo.Text = nuevoCodigo
+    Me.txtCodigo.Text = Trim(Me.txtBuscar.Text)
+'    Me.txtProducto.Text = Trim(Me.txtBuscar.Text)
+    Me.txtProducto.Text = ""
+    Me.txtPrecioUnitario.Text = ""
+    Me.txtPrecioVenta.Text = ""
+    Me.txtUltCosto.Text = "$0"
+'    Me.txtNumFra.Text = "" 'Formato de carga inicial'
+    
+    ProductoNuevo = True
+    Me.lblNuevoProducto.Caption = "PRODUCTO NUEVO - Se creará al agregar"
+    Me.lblNuevoProducto.ForeColor = RGB(0, 128, 0)
+    
+    MsgBox "Complete los precios y agregue al carrito", vbInformation
+    Me.txtProducto.SetFocus
+End Sub
+
+' ==================================================
+' CÁLCULOS
+' ==================================================
+
+Private Sub txtCantidad_Change()
+    CalcularSubtotal
+End Sub
+
+Private Sub txtPrecioUnitario_Change()
+    CalcularSubtotal
+End Sub
+
+Private Sub txtDescuento_Change()
+    CalcularSubtotal
+End Sub
+
+Sub CalcularSubtotal()
+    On Error Resume Next
+    
+    Dim cantidad As Double
+    Dim precio As Double
+    Dim descuento As Double
+    Dim subtotal As Double
+    Dim totalConDesc As Double
+    
+    cantidad = Val(Me.txtCantidad.Text)
+    precio = Val(Me.txtPrecioUnitario.Text)
+    descuento = Val(Me.txtDescuento.Text)
+    
+    subtotal = cantidad * precio
+    totalConDesc = subtotal * (1 - descuento / 100)
+    
+    Me.txtSubtotal.Text = Format(subtotal, "$#,##0")
+    Me.txtTotalConDesc.Text = Format(totalConDesc, "$#,##0")
+End Sub
+
+' ==================================================
+' AGREGAR AL CARRITO
+' ==================================================
+
+
+
+Private Sub btnAgregarCarrito_Click()
+    AgregarAlCarrito
+    Me.txtBuscar.Text = ""
+End Sub
+
+
+
+
+Sub AgregarAlCarrito()
+Dim t As Double: t = TNow
+    On Error GoTo EH
+    SpeedOn
+
+    ' Validaciones
+    If Trim(Me.txtCodigo.Text) = "" Then
+        MsgBox "Seleccione un producto"
+        Exit Sub
+    End If
+    
+    If Val(Me.txtCantidad.Text) <= 0 Then
+        MsgBox "Ingrese cantidad válida"
+        Exit Sub
+    End If
+    
+    If Val(Me.txtPrecioUnitario.Text) <= 0 Then
+        MsgBox "Ingrese precio de compra"
+        Exit Sub
+    End If
+    
+    If Val(Me.txtPrecioVenta.Text) <= 0 Then
+        MsgBox "Ingrese precio de venta"
+        Exit Sub
+    End If
+    
+    ' Si es producto nuevo, crearlo primero
+    If ProductoNuevo Then
+        CrearProductoEnInventario
+    End If
+    
+    ' Agregar al carrito
+    Me.lstCarrito.AddItem
+    Dim idx As Integer
+    idx = Me.lstCarrito.ListCount - 1
+    
+    Me.lstCarrito.List(idx, 0) = Me.txtCodigo.Text
+    Me.lstCarrito.List(idx, 1) = Me.txtProducto.Text
+    Me.lstCarrito.List(idx, 2) = Me.txtCantidad.Text
+    Me.lstCarrito.List(idx, 3) = Format(Val(Me.txtPrecioUnitario.Text), "$#,##0")
+    Me.lstCarrito.List(idx, 4) = Me.txtSubtotal.Text
+    Me.lstCarrito.List(idx, 5) = Me.txtDescuento.Text & "%"
+    Me.lstCarrito.List(idx, 6) = Me.txtTotalConDesc.Text
+    Me.lstCarrito.List(idx, 7) = Me.cmbUnidad.Text
+    Me.lstCarrito.List(idx, 8) = Format(Val(Me.txtPrecioVenta.Text), "$#,##0")
+    Me.lstCarrito.List(idx, 9) = Me.txtLote.Text
+    
+        
+    ' Calcular total
+    CalcularTotalCompra
+    CalcularSubtotalCarrito  ' AGREGAR ESTA LÍNEA
+'    ResaltarSubtotal  ' Efecto visual
+    
+    ' Limpiar para siguiente producto
+    LimpiarCamposProducto
+    Me.txtBuscar.SetFocus
+OUT:
+    SpeedOff
+    Debug.Print "FinalizarCompra", Format(TNow - t, "0.000") & " s"
+    Exit Sub
+EH:
+SpeedOff:     MsgBox "Error: " & Err.Description
+    
+End Sub
+
+Sub CrearProductoEnInventario()
+    Dim nuevaFila As Long
+    nuevaFila = wsProductos.Cells(wsProductos.Rows.Count, "A").End(xlUp).Row + 1
+    
+    With wsProductos
+        .Cells(nuevaFila, 1).Value = Me.txtCodigo.Text ' Código
+        .Cells(nuevaFila, 2).Value = Me.txtProducto.Text ' Descripción
+        .Cells(nuevaFila, 3).Value = Me.cmbUnidad.Text ' Unidad
+        .Cells(nuevaFila, 4).Value = Val(Me.txtPrecioUnitario.Text) ' Costo
+        .Cells(nuevaFila, 5).Value = 0 ' Stock inicial 0
+        .Cells(nuevaFila, 6).Value = Val(Me.txtPrecioVenta.Text) ' Precio venta
+        .Cells(nuevaFila, 7).Value = Date ' Fecha creación
+    End With
+    
+    MsgBox "Producto creado: " & Me.txtProducto.Text, vbInformation
+    ProductoNuevo = False
+    CargarProductos
+    ' --- refrescar cache del POS para que vea el producto YA ---
+    On Error Resume Next
+    If modCacheGlobal.CacheCargado Then
+        modCacheGlobal.InicializarSistemaRapido   ' reconstruye índices/arrays
+    End If
+    Application.StatusBar = "Guardado"            ' gatilla refresco en POS.UserForm_Activate
+    On Error GoTo 0
+    
+End Sub
+
+Sub CalcularTotalCompra()
+    Dim total As Double
+    Dim i As Integer
+    
+    For i = 0 To Me.lstCarrito.ListCount - 1
+        Dim valor As String
+        valor = Me.lstCarrito.List(i, 6)
+        valor = Replace(valor, "$", "")
+        valor = Replace(valor, ".", "")
+        total = total + Val(valor)
+    Next i
+    
+    Me.txtTotalCompra.Text = Format(total, "$#,##0")
+End Sub
+
+' ==================================================
+' FINALIZAR COMPRA
+' ==================================================
+
+Private Sub btnFinalizarCompra_Click()
+    FinalizarCompra
+    
+    
+End Sub
+
+Sub FinalizarCompra()
+    Dim t As Double: t = TNow
+        On Error GoTo EH
+        SpeedOn
+
+
+    If Me.lstCarrito.ListCount = 0 Then
+        MsgBox "No hay productos en el carrito"
+        Exit Sub
+    End If
+    
+    If Me.cmbProveedor.Text = "" Then
+        MsgBox "Seleccione un proveedor"
+        Exit Sub
+    End If
+    
+    ' Registrar cada producto
+    Dim i As Integer
+    Dim filaCompra As Long
+    
+    For i = 0 To Me.lstCarrito.ListCount - 1
+        filaCompra = wsCompras.Cells(wsCompras.Rows.Count, "A").End(xlUp).Row + 1
+        
+        With wsCompras
+            .Cells(filaCompra, 1).Value = Date
+            .Cells(filaCompra, 2).Value = Time
+            .Cells(filaCompra, 3).Value = numeroCompra
+            .Cells(filaCompra, 4).Value = Me.cmbProveedor.Text
+            .Cells(filaCompra, 5).Value = Me.lstCarrito.List(i, 0) ' Código
+            .Cells(filaCompra, 6).Value = Me.lstCarrito.List(i, 1) ' Producto
+            .Cells(filaCompra, 7).Value = Val(Me.lstCarrito.List(i, 2)) ' Cantidad
+            
+            ' Precio unitario
+            Dim precio As String
+            precio = Me.lstCarrito.List(i, 3)
+            precio = Replace(precio, "$", "")
+            precio = Replace(precio, ".", "")
+            .Cells(filaCompra, 8).Value = Val(precio)
+            
+            ' Subtotal
+            Dim subtotal As String
+            subtotal = Me.lstCarrito.List(i, 4)
+            subtotal = Replace(subtotal, "$", "")
+            subtotal = Replace(subtotal, ".", "")
+            .Cells(filaCompra, 9).Value = Val(subtotal)
+            
+            .Cells(filaCompra, 10).Value = Me.lstCarrito.List(i, 9) ' Lote
+            .Cells(filaCompra, 11).Value = Val(Replace(Me.lstCarrito.List(i, 5), "%", "")) ' Descuento
+            
+            ' Total con descuento
+            Dim totalDesc As String
+            totalDesc = Me.lstCarrito.List(i, 6)
+            totalDesc = Replace(totalDesc, "$", "")
+            totalDesc = Replace(totalDesc, ".", "")
+            .Cells(filaCompra, 12).Value = Val(totalDesc)
+            
+            .Cells(filaCompra, 13).Value = Me.lstCarrito.List(i, 7) ' Unidad
+            
+            ' Precio venta
+            Dim pventa As String
+            pventa = Me.lstCarrito.List(i, 8)
+            pventa = Replace(pventa, "$", "")
+            pventa = Replace(pventa, ".", "")
+            .Cells(filaCompra, 14).Value = Val(pventa)
+            
+            .Cells(filaCompra, 15).Value = Val(precio) ' Último costo
+            
+            .Cells(filaCompra, 16).Value = Me.txtNumFra
+        End With
+        
+        ' ACTUALIZAR INVENTARIO
+        ActualizarInventario Me.lstCarrito.List(i, 0), Val(Me.lstCarrito.List(i, 2)), Val(precio), Val(pventa)
+    Next i
+    
+    ' --- marcar y refrescar ---
+    Application.StatusBar = "StockActualizado"
+    
+    On Error Resume Next
+    Dim f As Object
+    For Each f In VBA.UserForms
+        If f.Name = "frmPOS" Then
+            f.RefrescarCatalogo     ' (lo creamos en el paso 3)
+            Exit For
+        End If
+    Next f
+    On Error GoTo 0
+
+    
+    
+    MsgBox "Compra #" & numeroCompra & " registrada exitosamente" & vbCrLf & _
+           "Total: " & Me.txtTotalCompra.Text & vbCrLf & _
+           "Inventario actualizado", vbInformation
+    
+    ' Preparar siguiente compra
+    numeroCompra = numeroCompra + 1
+    LimpiarFormulario
+OUT:
+    SpeedOff
+    Debug.Print "FinalizarCompra", Format(TNow - t, "0.000") & " s"
+    Exit Sub
+EH:
+SpeedOff:     MsgBox "Error: " & Err.Description
+  
+    
+End Sub
+
+' Suma al stock y actualiza costo/precio de venta en Hoja1
+Public Sub ActualizarInventario(ByVal codigo As String, _
+                                ByVal cantidad As Double, _
+                                ByVal costo As Double, _
+                                ByVal pventa As Double)
+    Dim f As Long, rng As Range
+    With wsProductos ' Hoja1
+        Set rng = .Columns("A").Find(What:=codigo, LookIn:=xlValues, LookAt:=xlWhole)
+        If Not rng Is Nothing Then
+            f = rng.Row
+            ' Col E = Stock, F = Precio venta, D = Costo (ajústalo si tus columnas difieren)
+            .Cells(f, 5).Value = Val(.Cells(f, 5).Value) + Val(cantidad)
+            .Cells(f, 4).Value = Val(costo)
+            .Cells(f, 6).Value = Val(pventa)
+            .Cells(f, 15).Value = "Compra: " & Format(Now, "dd/mm HH:nn")
+            .Cells(f, 16).Value = " +" & CStr(cantidad) & " (Stock=" & .Cells(f, 5).Value & ")"
+        Else
+            ' (opcional) crear producto si no existe
+            f = .Cells(.Rows.Count, "A").End(xlUp).Row + 1
+            .Cells(f, 1).Value = codigo
+            .Cells(f, 2).Value = "SIN NOMBRE"
+            .Cells(f, 4).Value = Val(costo)
+            .Cells(f, 5).Value = Val(cantidad)
+            .Cells(f, 6).Value = Val(pventa)
+        End If
+    End With
+
+    ' Reflejar en caché global si la usas
+    On Error Resume Next
+    If modCacheGlobal.CacheCargado Then
+        modCacheGlobal.ActualizarStock codigo, wsProductos.Cells(f, 5).Value
+        If Not IsError(pventa) Then modCacheGlobal.ActualizarPrecio codigo, Val(pventa)
+    End If
+    On Error GoTo 0
+End Sub
+
+
+' ==================================================
+' UTILIDADES
+' ==================================================
+
+Private Sub btnEliminarItem_Click()
+    If Me.lstCarrito.ListIndex >= 0 Then
+        Me.lstCarrito.RemoveItem Me.lstCarrito.ListIndex
+        CalcularTotalCompra
+        CalcularSubtotalCarrito  ' AGREGAR ESTA LÍNEA
+    End If
+End Sub
+
+Private Sub btnNuevoProveedor_Click()
+    frmNuevoProveedor.Show vbModal
+End Sub
+
+Private Sub btnLimpiar_Click()
+    LimpiarFormulario
+    Me.txtBuscar.SetFocus
+End Sub
+
+Sub LimpiarFormulario()
+    Me.lstCarrito.Clear
+    Me.txtBuscar.Text = ""
+    LimpiarCamposProducto
+    Me.txtTotalCompra.Text = "$0"
+    Me.lblSubtotalTEST.Caption = "SUBTOTAL SIN DESCUENTOS: $0"  ' AGREGAR
+    Me.txtNumCompra.Text = numeroCompra
+    Me.txtFecha.Text = Format(Date, "dd/mm/yyyy")
+    Me.txtHora.Text = Format(Time, "hh:mm:ss")
+    Me.txtLote.Text = "LOTE-" & Format(Date, "yyyymmdd") & "-" & numeroCompra
+    Me.Caption = "MÓDULO DE COMPRAS - Compra #" & numeroCompra
+End Sub
+
+Sub LimpiarCamposProducto()
+    Me.txtCodigo.Text = ""
+    Me.txtProducto.Text = ""
+    Me.txtCantidad.Text = "1"
+    Me.txtPrecioUnitario.Text = ""
+    Me.txtPrecioVenta.Text = ""
+    
+
+    Me.txtDescuento.Text = "0"
+
+    
+    Me.txtSubtotal.Text = "$0"
+    Me.txtTotalConDesc.Text = "$0"
+    Me.txtUltCosto.Text = ""
+    Me.cmbUnidad.ListIndex = 0
+    Me.lblNuevoProducto.Caption = ""
+    ProductoNuevo = False
+End Sub
+
+Private Sub btnCerrar_Click()
+    If Me.lstCarrito.ListCount > 0 Then
+        If MsgBox("Hay productos en el carrito. ¿Cerrar sin guardar?", vbYesNo) = vbNo Then
+            Exit Sub
+        End If
+    End If
+    Unload Me
+    
+End Sub
+
+' Validación numérica
+Private Sub txtCantidad_KeyPress(ByVal KeyAscii As MSForms.ReturnInteger)
+    If Not (KeyAscii >= 48 And KeyAscii <= 57) And KeyAscii <> 8 And KeyAscii <> 46 Then
+        KeyAscii = 0
+    End If
+    
+    
+End Sub
+
+Private Sub txtPrecioUnitario_KeyPress(ByVal KeyAscii As MSForms.ReturnInteger)
+    If Not (KeyAscii >= 48 And KeyAscii <= 57) And KeyAscii <> 8 Then
+        KeyAscii = 0
+    End If
+    ' Si presiona Enter, ir a Descuento
+    If KeyAscii = 13 Then ' 13 es Enter
+        KeyAscii = 0 ' Cancelar el Enter
+        Me.txtDescuento.SetFocus
+    End If
+    
+End Sub
+
+Private Sub txtPrecioVenta_KeyPress(ByVal KeyAscii As MSForms.ReturnInteger)
+    If Not (KeyAscii >= 48 And KeyAscii <= 57) And KeyAscii <> 8 Then
+        KeyAscii = 0
+    End If
+    ' Si presiona Enter, ejecutar Agregar al Carrito
+    If KeyAscii = 13 Then
+        KeyAscii = 0
+        btnAgregarCarrito_Click ' Ejecuta directamente la acción
+    End If
+    
+End Sub
+
+Private Sub txtDescuento_KeyPress(ByVal KeyAscii As MSForms.ReturnInteger)
+    If Not (KeyAscii >= 48 And KeyAscii <= 57) And KeyAscii <> 8 And KeyAscii <> 46 Then
+        KeyAscii = 0
+    End If
+    
+    ' Si presiona Enter, ir a Precio Venta
+    If KeyAscii = 13 Then
+        KeyAscii = 0
+        Me.txtPrecioVenta.SetFocus
+    End If
+    
+End Sub
+
+' ==================================================
+' EVENTOS DE SELECCIÓN AUTOMÁTICA DE TEXTO
+' ==================================================
+
+
+' --- Para txtCantidad ---
+Private Sub txtCantidad_Enter()
+    SeleccionarTodo Me.txtCantidad
+End Sub
+
+Private Sub txtCantidad_GotFocus()
+    If UltimoTextBoxSeleccionado <> "txtCantidad" Then
+        Application.OnTime Now, "SeleccionarCantidad"
+        UltimoTextBoxSeleccionado = "txtCantidad"
+    End If
+End Sub
+
+' --- Para txtDescuento ---
+Private Sub txtDescuento_Enter()
+    SeleccionarTodo Me.txtDescuento
+End Sub
+
+Private Sub txtDescuento_GotFocus()
+    If UltimoTextBoxSeleccionado <> "txtDescuento" Then
+        Application.OnTime Now, "SeleccionarDescuento"
+        UltimoTextBoxSeleccionado = "txtDescuento"
+    End If
+End Sub
+
+' --- Para txtPrecioUnitario ---
+Private Sub txtPrecioUnitario_Enter()
+    SeleccionarTodo Me.txtPrecioUnitario
+End Sub
+
+Private Sub txtPrecioUnitario_GotFocus()
+    If UltimoTextBoxSeleccionado <> "txtPrecioUnitario" Then
+        Application.OnTime Now, "SeleccionarPrecioUnitario"
+        UltimoTextBoxSeleccionado = "txtPrecioUnitario"
+    End If
+End Sub
+
+' --- Para txtPrecioVenta ---
+Private Sub txtPrecioVenta_Enter()
+    SeleccionarTodo Me.txtPrecioVenta
+End Sub
+
+Private Sub txtPrecioVenta_GotFocus()
+    If UltimoTextBoxSeleccionado <> "txtPrecioVenta" Then
+        Application.OnTime Now, "SeleccionarPrecioVenta"
+        UltimoTextBoxSeleccionado = "txtPrecioVenta"
+    End If
+End Sub
+' NO DEJA CERRAR CON LA X SI HAY COMPRAS
+Private Sub UserForm_QueryClose(Cancel As Integer, CloseMode As Integer)
+    If CloseMode = vbFormControlMenu Then ' Si cierra con la X
+        If Me.lstCarrito.ListCount > 0 Then
+            Dim respuesta As VbMsgBoxResult
+            respuesta = MsgBox("Hay " & Me.lstCarrito.ListCount & " productos en el carrito" & vbCrLf & _
+                             "¿Minimizar para continuar después?", vbYesNoCancel + vbQuestion)
+            
+            Select Case respuesta
+                Case vbYes
+                    Cancel = True
+                    Me.Hide ' Solo ocultar
+                Case vbNo
+                    ' Cerrar definitivamente
+                    Cancel = False
+                Case vbCancel
+                    Cancel = True
+            End Select
+        End If
+    End If
+End Sub
+
+Public Function TieneCompraPendiente() As Boolean
+    TieneCompraPendiente = (Me.lstCarrito.ListCount > 0)
+End Function
+
+Private Sub UserForm_Activate()
+    If TieneCompraPendiente() Then
+        Dim respuesta As VbMsgBoxResult
+        respuesta = MsgBox("Tiene una compra pendiente con " & Me.lstCarrito.ListCount & " items" & vbCrLf & _
+                          "¿Desea continuarla?", vbYesNo + vbQuestion, "Compra Pendiente")
+        
+        If respuesta = vbNo Then
+            If MsgBox("¿Está seguro de limpiar el carrito?", vbYesNo + vbExclamation) = vbYes Then
+                LimpiarFormulario
+            End If
+        End If
+    End If
+    
+    ' Enfocar en buscar
+    Me.txtBuscar.SetFocus
+End Sub
+
+Private Sub btnMinimizar_Click()
+    Me.Hide
+    MsgBox "Compra minimizada - Continúe atendiendo", vbInformation, "Módulo Compras"
+End Sub
+
+' ==================================================
+' FUNCIÓN PARA CALCULAR SUBTOTAL DEL CARRITO
+' ==================================================
+Sub CalcularSubtotalCarrito()
+    Dim subtotalSinDescuento As Double
+    Dim i As Integer
+    
+    subtotalSinDescuento = 0
+    
+    For i = 0 To Me.lstCarrito.ListCount - 1
+        Dim valor As String
+        valor = Me.lstCarrito.List(i, 4)
+        valor = Replace(valor, "$", "")
+        valor = Replace(valor, ".", "")
+        valor = Replace(valor, ",", "")
+        subtotalSinDescuento = subtotalSinDescuento + Val(valor)
+    Next i
+    
+    ' Actualizar el label
+    Me.lblSubtotalTEST.Caption = "SUBTOTAL SIN DESCUENTOS: " & Format(subtotalSinDescuento, "$#,##0")
+    
+    DoEvents  ' AGREGAR ESTA LÍNEA
+    
+    ' Configurar colores
+    With Me.lblSubtotalTEST
+        .Font.Bold = True
+        .Font.Size = 12
+        .ForeColor = RGB(0, 0, 255)
+        .BackColor = RGB(255, 224, 255)
+        .BorderStyle = fmBorderStyleSingle
+        .TextAlign = fmTextAlignCenter
+    End With
+End Sub
+
+'Sub ResaltarSubtotal()
+'    ' Versión simplificada sin Wait
+'    Me.lblSubtotalCarrito.BackColor = RGB(255, 255, 100)  ' Amarillo claro
+'    DoEvents
+'
+'    ' Usar un contador simple en lugar de Wait
+'    Dim contador As Long
+'    For contador = 1 To 100000
+'        ' Pequeña pausa
+'    Next contador
+'
+'    Me.lblSubtotalCarrito.BackColor = RGB(255, 224, 255) ' Rosa pálido
+'    DoEvents
+'End Sub
+
+Private Sub btnPrueba_Click()
+    ' Prueba directa del label
+    Me.lblSubtotal.Caption = "PRUEBA 123"
+    MsgBox "El label dice: " & Me.lblSubtotal.Caption
+End Sub
