@@ -1,0 +1,391 @@
+' ==================================================
+' SISTEMA DE INICIO DE SESIÓN PREMIUM
+' ==================================================
+
+' Variables globales
+Dim wsUsuarios As Worksheet
+Dim intentos As Integer
+
+Private Sub UserForm_Initialize()
+    On Error GoTo ErrorHandler
+    
+    ' Configurar hoja de usuarios
+    Call ConfigurarHojaUsuarios
+    
+    ' Configurar interfaz
+    Call ConfigurarInterfaz
+    
+    ' Cargar usuarios en ListBox con estilo
+    Call CargarUsuarios
+    
+    ' Verificar usuario recordado
+    Call VerificarUsuarioRecordado
+    
+    ' Configurar intentos
+    intentos = 0
+    
+    Exit Sub
+    
+ErrorHandler:
+    MsgBox "Error al inicializar sistema de login: " & Err.Description, vbCritical
+End Sub
+
+Sub ConfigurarHojaUsuarios()
+    On Error Resume Next
+    Set wsUsuarios = ThisWorkbook.Sheets("Usuarios")
+    If wsUsuarios Is Nothing Then
+        Set wsUsuarios = ThisWorkbook.Sheets.Add
+        wsUsuarios.Name = "Usuarios"
+        
+        ' Crear encabezados
+        wsUsuarios.Range("A1:E1").Value = Array("ID", "Usuario", "Password", "Nivel", "Activo")
+        
+        ' Agregar usuarios por defecto (CONTRASEÑAS ENCRIPTADAS)
+        wsUsuarios.Range("A2:E2").Value = Array(1, "admin", Encriptar("admin123"), "Administrador", "SI")
+        wsUsuarios.Range("A3:E3").Value = Array(2, "vendedor", Encriptar("ventas123"), "Vendedor", "SI")
+        wsUsuarios.Range("A4:E4").Value = Array(3, "invitado", Encriptar("guest123"), "Invitado", "SI")
+        
+        ' Proteger y ocultar la hoja
+        wsUsuarios.Visible = xlSheetVeryHidden ' Muy oculta - no se puede mostrar desde Excel
+        'wsUsuarios.Protect Password:="pos123", UserInterfaceOnly:=True
+        
+        wsUsuarios.Columns.AutoFit
+    Else
+        ' Si ya existe, asegurarse de que esté oculta
+        wsUsuarios.Visible = xlSheetVeryHidden
+    End If
+    On Error GoTo 0
+End Sub
+
+Sub ConfigurarInterfaz()
+    ' Configurar colores y estilo
+    Me.BackColor = RGB(240, 245, 249)
+    
+    ' ?? CONFIGURACIÓN DE LISTBOX MÁS GRANDE ??
+    With Me.lstUsuarios
+        .BackColor = RGB(255, 255, 255)
+        .ForeColor = RGB(51, 51, 51)
+        .BorderStyle = fmBorderStyleSingle
+        .BorderColor = RGB(200, 200, 200)
+        .ColumnCount = 3
+        .ColumnWidths = "120;100;0" ' ? MÁS ANCHO: Usuario (120), Nivel (100), ID (0-oculto)
+        .Font.Size = 11 ' ? Texto más grande
+        .Font.Name = "Segoe UI"
+        .Height = 180   ' ? Más alto
+        .Width = 250    ' ? Más ancho
+    End With
+    
+    ' Configurar TextBoxes (se mantiene igual)
+    With Me.txtUsuario
+        .BackColor = RGB(255, 255, 255)
+        .BorderStyle = fmBorderStyleSingle
+        .ForeColor = RGB(51, 51, 51)
+        .Font.Size = 11
+        .Font.Name = "Segoe UI"
+    End With
+    
+    With Me.txtPassword
+        .BackColor = RGB(255, 255, 255)
+        .BorderStyle = fmBorderStyleSingle
+        .ForeColor = RGB(51, 51, 51)
+        .Font.Size = 11
+        .Font.Name = "Segoe UI"
+        .PasswordChar = "•"
+    End With
+    
+    ' Configurar botones (se mantiene igual)
+    With Me.btnIngresar
+        .BackColor = RGB(76, 175, 80) ' Verde
+        .ForeColor = RGB(255, 255, 255)
+        .Font.Size = 11
+        .Font.Name = "Segoe UI"
+        .Font.Bold = True
+    End With
+    
+    With Me.btnSalir
+        .BackColor = RGB(244, 67, 54) ' Rojo
+        .ForeColor = RGB(255, 255, 255)
+        .Font.Size = 11
+        .Font.Name = "Segoe UI"
+    End With
+End Sub
+
+Sub CargarUsuarios()
+    On Error GoTo ErrorHandler
+    
+    Me.lstUsuarios.Clear
+    
+    Dim fila As Long
+    Dim ultimaFila As Long
+    ultimaFila = wsUsuarios.Cells(wsUsuarios.Rows.Count, "A").End(xlUp).Row
+    
+    If ultimaFila < 2 Then
+        Me.lstUsuarios.AddItem
+        Me.lstUsuarios.List(0, 0) = "No hay usuarios"
+        Exit Sub
+    End If
+    
+    ' Agregar encabezados visuales
+    Me.lstUsuarios.AddItem
+    Me.lstUsuarios.List(0, 0) = "USUARIO"
+    Me.lstUsuarios.List(0, 1) = "NIVEL"
+    Me.lstUsuarios.List(0, 2) = "ID"
+    
+    ' Cambiar color del encabezado (simulado)
+    
+    ' Cargar usuarios activos
+    For fila = 2 To ultimaFila
+        If wsUsuarios.Cells(fila, 5).Value = "SI" Then ' Columna Activo
+            Me.lstUsuarios.AddItem
+            Dim nuevaFila As Integer
+            nuevaFila = Me.lstUsuarios.ListCount - 1
+            
+            Me.lstUsuarios.List(nuevaFila, 0) = wsUsuarios.Cells(fila, 2).Value ' Usuario
+            Me.lstUsuarios.List(nuevaFila, 1) = wsUsuarios.Cells(fila, 4).Value ' Nivel
+            Me.lstUsuarios.List(nuevaFila, 2) = wsUsuarios.Cells(fila, 1).Value ' ID
+        End If
+    Next fila
+    
+    Exit Sub
+    
+ErrorHandler:
+    MsgBox "Error cargando usuarios: " & Err.Description, vbCritical
+End Sub
+
+Sub VerificarUsuarioRecordado()
+    ' Verificar si hay un usuario recordado
+    On Error Resume Next
+    Dim usuarioRecordado As String
+    usuarioRecordado = GetSetting("SistemaPOS", "Login", "Usuario", "")
+    
+    If usuarioRecordado <> "" Then
+        Me.txtUsuario.Text = usuarioRecordado
+        Me.chkRecordar.Value = True
+        Me.txtPassword.SetFocus
+    End If
+    On Error GoTo 0
+End Sub
+Private Sub btnIngresar_Enter()
+    Call ValidarLogin
+End Sub
+
+
+Private Sub btnIngresar_Click()
+    Call ValidarLogin
+End Sub
+
+Sub ValidarLogin()
+    On Error GoTo ErrorHandler
+    
+    ' Verificar que la hoja de usuarios existe
+    If wsUsuarios Is Nothing Then
+        MsgBox "Error: No se encontró la base de datos de usuarios", vbCritical
+        Exit Sub
+    End If
+    
+    Dim usuario As String
+    Dim password As String
+    Dim usuarioValido As Boolean
+    Dim nivelUsuario As String
+    
+    usuario = Trim(Me.txtUsuario.Text)
+    password = Trim(Me.txtPassword.Text)
+    
+    ' Validaciones básicas
+    If usuario = "" Then
+        MsgBox "Ingrese su nombre de usuario", vbExclamation
+        Me.txtUsuario.SetFocus
+        Exit Sub
+    End If
+    
+    If password = "" Then
+        MsgBox "Ingrese su contraseña", vbExclamation
+        Me.txtPassword.SetFocus
+        Exit Sub
+    End If
+    
+    ' Verificar credenciales
+    usuarioValido = False
+    Dim fila As Long
+    Dim ultimaFila As Long
+    ultimaFila = wsUsuarios.Cells(wsUsuarios.Rows.Count, "A").End(xlUp).Row
+    
+    If ultimaFila < 2 Then
+        MsgBox "No hay usuarios registrados en el sistema", vbExclamation
+        Exit Sub
+    End If
+    
+    For fila = 2 To ultimaFila
+        If UCase(wsUsuarios.Cells(fila, 2).Value) = UCase(usuario) And _
+           wsUsuarios.Cells(fila, 3).Value = password And _
+           wsUsuarios.Cells(fila, 5).Value = "SI" Then
+            
+            usuarioValido = True
+            nivelUsuario = wsUsuarios.Cells(fila, 4).Value
+            Exit For
+        End If
+    Next fila
+    
+    If usuarioValido Then
+        ' Login exitoso
+        Call LoginExitoso(usuario, nivelUsuario)
+    Else
+        ' Login fallido
+        intentos = intentos + 1
+        Call LoginFallido
+    End If
+    
+    Exit Sub
+    
+ErrorHandler:
+    MsgBox "Error validando credenciales: " & Err.Description & vbCrLf & _
+           "Contacte al administrador del sistema.", vbCritical, "Error de Sistema"
+End Sub
+Sub LoginExitoso(usuario As String, nivel As String)
+    ' SIN manejo de errores - que falle si hay problema
+    
+    ' 1. Guardar para recordar
+    If Me.chkRecordar.Value Then
+        SaveSetting "SistemaPOS", "Login", "Usuario", usuario
+    End If
+    
+    ' 2. Guardar en variables GLOBALES en lugar de Names
+    GuardarSesionGlobal usuario, nivel
+    
+    ' 3. Mensaje de bienvenida
+    MsgBox "¡Bienvenido(a) " & usuario & "! Nivel: " & nivel, vbInformation
+    
+    ' 4. Cerrar y abrir sistema
+    Unload Me
+    frmPOS.Show
+End Sub
+
+Sub GuardarSesionGlobal(usuario As String, nivel As String)
+    ' Método 1: Guardar en hoja de trabajo (MÁS CONFiable)
+    Dim ws As Worksheet
+    Set ws = ThisWorkbook.Sheets(1)
+    ws.Range("ZZ1").Value = usuario
+    ws.Range("ZZ2").Value = nivel
+    
+    ' Método 2: Intentar con Names también
+    On Error Resume Next
+    ThisWorkbook.Names("UsuarioActual").Delete
+    ThisWorkbook.Names("NivelUsuario").Delete
+    ThisWorkbook.Names.Add Name:="UsuarioActual", RefersTo:="=""" & usuario & """"
+    ThisWorkbook.Names.Add Name:="NivelUsuario", RefersTo:="=""" & nivel & """"
+End Sub
+
+Sub CrearNamesSuperSeguro(usuario As String, nivel As String)
+    On Error Resume Next ' Ignorar TODOS los errores
+    
+    ' Limpiar nombres existentes
+    ThisWorkbook.Names("UsuarioActual").Delete
+    ThisWorkbook.Names("NivelUsuario").Delete
+    
+    ' Crear nuevos nombres - método directo
+    ThisWorkbook.Names.Add Name:="UsuarioActual", RefersTo:="=""" & usuario & """"
+    ThisWorkbook.Names.Add Name:="NivelUsuario", RefersTo:="=""" & nivel & """"
+    
+    ' Si falla, intentar método alternativo
+    If Err.Number <> 0 Then
+        Err.Clear
+        ' Método alternativo - asignar directamente a una celda
+        Dim ws As Worksheet
+        Set ws = ThisWorkbook.Sheets(1) ' Primera hoja
+        ws.Range("Z1").Value = usuario ' Usuario en Z1
+        ws.Range("Z2").Value = nivel   ' Nivel en Z2
+    End If
+End Sub
+
+' AÑADE esta función en el mismo frmLogin
+Sub CrearNamesDeSesion(usuario As String, nivel As String)
+    On Error Resume Next
+    
+    ' Método 1: Intentar eliminar si existen
+    ThisWorkbook.Names("UsuarioActual").Delete
+    ThisWorkbook.Names("NivelUsuario").Delete
+    
+    ' Método 2: Crear con referencias absolutas
+    ThisWorkbook.Names.Add Name:="UsuarioActual", RefersTo:="=""" & usuario & """"
+    ThisWorkbook.Names.Add Name:="NivelUsuario", RefersTo:="=""" & nivel & """"
+    
+    ' Método 3: Si falla, intentar de otra forma
+    If Err.Number <> 0 Then
+        Err.Clear
+        ThisWorkbook.Names.Add Name:="UsuarioActual", RefersTo:="=""admin"""
+        ThisWorkbook.Names.Add Name:="NivelUsuario", RefersTo:="=""Administrador"""
+    End If
+End Sub
+Sub LoginFallido()
+    Dim intentosRestantes As Integer
+    intentosRestantes = 3 - intentos
+    
+    If intentosRestantes > 0 Then
+        MsgBox "Usuario o contraseña incorrectos." & vbCrLf & _
+               "Intentos restantes: " & intentosRestantes, vbExclamation, "Login Fallido"
+        
+        Me.txtPassword.Text = ""
+        Me.txtPassword.SetFocus
+        
+        ' Efecto visual de error
+        Call EfectoErrorLogin
+    Else
+        MsgBox "Demasiados intentos fallidos. El sistema se cerrará.", vbCritical, "Acceso Denegado"
+        ThisWorkbook.Close SaveChanges:=False
+    End If
+End Sub
+
+Sub EfectoErrorLogin()
+    ' Efecto visual para login fallido
+    Me.txtPassword.BackColor = RGB(255, 235, 238) ' Rojo claro
+    Me.txtUsuario.BackColor = RGB(255, 235, 238)
+    
+    ' Restaurar color después de 1 segundo
+    Application.OnTime Now + TimeValue("00:00:01"), "RestaurarColoresLogin"
+End Sub
+
+' Esta función debe estar en un módulo normal (no en el UserForm)
+' Sub RestaurarColoresLogin()
+'     frmLogin.txtPassword.BackColor = RGB(255, 255, 255)
+'     frmLogin.txtUsuario.BackColor = RGB(255, 255, 255)
+' End Sub
+
+Private Sub btnSalir_Click()
+    Dim respuesta As Integer
+    respuesta = MsgBox("¿Está seguro que desea salir del sistema?", vbYesNo + vbQuestion, "Confirmar Salida")
+    
+    If respuesta = vbYes Then
+        ThisWorkbook.Close SaveChanges:=False
+    End If
+End Sub
+
+Private Sub lstUsuarios_DblClick(ByVal Cancel As MSForms.ReturnBoolean)
+    ' Al hacer doble click en un usuario, llenar el campo de usuario
+    If Me.lstUsuarios.ListIndex > 0 Then ' >0 para saltar el encabezado
+        Me.txtUsuario.Text = Me.lstUsuarios.List(Me.lstUsuarios.ListIndex, 0)
+        Me.txtPassword.SetFocus
+    End If
+End Sub
+
+Private Sub txtUsuario_KeyPress(ByVal KeyAscii As MSForms.ReturnInteger)
+    If KeyAscii = 13 Then ' Enter
+        Me.txtPassword.SetFocus
+    End If
+End Sub
+
+Private Sub txtPassword_KeyPress(ByVal KeyAscii As MSForms.ReturnInteger)
+    If KeyAscii = 13 Then ' Enter
+        Call ValidarLogin
+    End If
+End Sub
+
+Private Sub UserForm_QueryClose(Cancel As Integer, CloseMode As Integer)
+    ' Prevenir que cierre con X
+    If CloseMode = vbFormControlMenu Then
+        Cancel = True
+        Call btnSalir_Click
+    End If
+End Sub
+
+
+

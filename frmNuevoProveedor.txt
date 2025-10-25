@@ -1,0 +1,179 @@
+' ==================================================
+' FORMULARIO PARA NUEVO PROVEEDOR - VERSIÓN CON NIT
+' ==================================================
+
+Option Explicit
+Dim wsProveedores As Worksheet
+
+Private Sub UserForm_Initialize()
+    Set wsProveedores = ThisWorkbook.Sheets("Proveedores")
+    
+    ' Configurar formulario
+    Me.Caption = "Agregar Nuevo Proveedor"
+    Me.Width = 420
+    Me.Height = 380
+    
+    ' Generar código automático
+    Dim ultimoCodigo As String
+    Dim nuevoNumero As Long
+    
+    If wsProveedores.Cells(wsProveedores.Rows.Count, "A").End(xlUp).Row > 1 Then
+        ' Obtener el último número y sumar 1
+        nuevoNumero = wsProveedores.Cells(wsProveedores.Rows.Count, "A").End(xlUp).Row
+    Else
+        nuevoNumero = 1
+    End If
+    
+    ' Formato: PROV-0001
+    Me.txtCodigo.Text = "PROV-" & Format(nuevoNumero, "0000")
+    Me.txtCodigo.Locked = True
+    Me.txtCodigo.BackColor = RGB(240, 240, 240) ' Gris claro para indicar que es automático
+    
+    ' Fecha actual por defecto
+    Me.txtFechaRegistro.Text = Format(Date, "dd/mm/yyyy")
+    Me.txtFechaRegistro.Locked = True
+    Me.txtFechaRegistro.BackColor = RGB(240, 240, 240)
+    
+    ' Enfocar en NIT
+    Me.txtNIT.SetFocus
+    
+    
+    ' Configurar formulario
+'    Me.Caption = "MÓDULO DE COMPRAS - Compra #" & numeroCompra
+    Me.Width = 750
+    Me.Height = 750
+    
+    
+End Sub
+
+Private Sub btnGuardar_Click()
+    ' Validaciones
+    If Trim(Me.txtNIT.Text) = "" Then
+        MsgBox "El NIT es obligatorio", vbExclamation
+        Me.txtNIT.SetFocus
+        Exit Sub
+    End If
+    
+    If Trim(Me.txtNombre.Text) = "" Then
+        MsgBox "El nombre del proveedor es obligatorio", vbExclamation
+        Me.txtNombre.SetFocus
+        Exit Sub
+    End If
+    
+    ' Verificar si el NIT ya existe
+    Dim filaExistente As Long
+    For filaExistente = 2 To wsProveedores.Cells(wsProveedores.Rows.Count, "B").End(xlUp).Row
+        If wsProveedores.Cells(filaExistente, 2).Value = Me.txtNIT.Text Then
+            MsgBox "Ya existe un proveedor con ese NIT: " & vbCrLf & _
+                   wsProveedores.Cells(filaExistente, 3).Value, vbExclamation
+            Me.txtNIT.SetFocus
+            Exit Sub
+        End If
+    Next filaExistente
+    
+    ' Guardar en la hoja
+    Dim nuevaFila As Long
+    nuevaFila = wsProveedores.Cells(wsProveedores.Rows.Count, "A").End(xlUp).Row + 1
+    
+    With wsProveedores
+        .Cells(nuevaFila, 1).Value = Me.txtCodigo.Text            ' Código
+        .Cells(nuevaFila, 2).Value = Me.txtNIT.Text               ' NIT
+        .Cells(nuevaFila, 3).Value = Me.txtNombre.Text            ' Nombre
+        .Cells(nuevaFila, 4).Value = CDate(Me.txtFechaRegistro.Text) ' Fecha
+        .Cells(nuevaFila, 5).Value = Me.txtTelefono.Text          ' Teléfono
+        .Cells(nuevaFila, 6).Value = Me.txtEmail.Text             ' Email
+        .Cells(nuevaFila, 7).Value = Me.txtDireccion.Text         ' Dirección
+        
+        ' Formato a la fila
+        .Range(.Cells(nuevaFila, 1), .Cells(nuevaFila, 7)).Borders.LineStyle = xlContinuous
+        
+        ' Color alternado para mejor visualización
+        If nuevaFila Mod 2 = 0 Then
+            .Range(.Cells(nuevaFila, 1), .Cells(nuevaFila, 7)).Interior.Color = RGB(245, 245, 245)
+        End If
+    End With
+    
+    MsgBox "Proveedor agregado exitosamente:" & vbCrLf & vbCrLf & _
+           "Código: " & Me.txtCodigo.Text & vbCrLf & _
+           "NIT: " & Me.txtNIT.Text & vbCrLf & _
+           "Nombre: " & Me.txtNombre.Text, vbInformation
+    
+    ' Preguntar si agregar otro
+    If MsgBox("¿Desea agregar otro proveedor?", vbYesNo + vbQuestion) = vbYes Then
+        Call LimpiarFormulario
+    Else
+        ' Actualizar el combo en frmCompras si está abierto
+        On Error Resume Next
+        frmCompras.CargarProveedores
+        frmCompras.cmbProveedor.Text = Me.txtNombre.Text & " - " & Me.txtNIT.Text
+        On Error GoTo 0
+        
+        Unload Me
+    End If
+End Sub
+
+Private Sub LimpiarFormulario()
+    ' Generar nuevo código
+    Dim nuevoNumero As Long
+    nuevoNumero = wsProveedores.Cells(wsProveedores.Rows.Count, "A").End(xlUp).Row
+    
+    Me.txtCodigo.Text = "PROV-" & Format(nuevoNumero, "0000")
+    Me.txtNIT.Text = ""
+    Me.txtNombre.Text = ""
+    Me.txtTelefono.Text = ""
+    Me.txtEmail.Text = ""
+    Me.txtDireccion.Text = ""
+    Me.txtFechaRegistro.Text = Format(Date, "dd/mm/yyyy")
+    
+    Me.txtNIT.SetFocus
+End Sub
+
+Private Sub btnCancelar_Click()
+    Unload Me
+End Sub
+
+' Validación para NIT (números y guión)
+Private Sub txtNIT_KeyPress(ByVal KeyAscii As MSForms.ReturnInteger)
+    ' Permitir números, guión, punto y retroceso
+    If Not (KeyAscii >= 48 And KeyAscii <= 57) And _
+       KeyAscii <> 45 And KeyAscii <> 46 And KeyAscii <> 8 Then
+        KeyAscii = 0
+    End If
+End Sub
+
+' Formatear NIT al salir
+Private Sub txtNIT_Exit(ByVal Cancel As MSForms.ReturnBoolean)
+    ' Opcional: Formatear NIT (ejemplo: 900123456-1)
+    If Len(Me.txtNIT.Text) > 0 And InStr(Me.txtNIT.Text, "-") = 0 Then
+        ' Si no tiene guión y es largo, agregar dígito de verificación
+        If Len(Me.txtNIT.Text) >= 9 Then
+            Me.txtNIT.Text = Left(Me.txtNIT.Text, 9) & "-" & Right(Me.txtNIT.Text, 1)
+        End If
+    End If
+End Sub
+
+' Validación para teléfono
+Private Sub txtTelefono_KeyPress(ByVal KeyAscii As MSForms.ReturnInteger)
+    If Not (KeyAscii >= 48 And KeyAscii <= 57) And KeyAscii <> 8 And _
+       KeyAscii <> 32 And KeyAscii <> 45 And KeyAscii <> 43 And _
+       KeyAscii <> 40 And KeyAscii <> 41 Then ' Permitir paréntesis
+        KeyAscii = 0
+    End If
+End Sub
+
+' Validación de email
+Private Sub txtEmail_Exit(ByVal Cancel As MSForms.ReturnBoolean)
+    If Me.txtEmail.Text <> "" Then
+        If InStr(Me.txtEmail.Text, "@") = 0 Or InStr(Me.txtEmail.Text, ".") = 0 Then
+            MsgBox "Formato de email no válido", vbExclamation
+            Me.txtEmail.SelStart = 0
+            Me.txtEmail.SelLength = Len(Me.txtEmail.Text)
+        End If
+    End If
+End Sub
+
+' Convertir nombre a mayúsculas
+Private Sub txtNombre_Change()
+    Me.txtNombre.Text = UCase(Me.txtNombre.Text)
+End Sub
+

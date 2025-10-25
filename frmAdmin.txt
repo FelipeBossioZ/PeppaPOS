@@ -1,0 +1,167 @@
+' === CÓDIGO PARA frmAdmin ===
+
+Private Sub UserForm_Initialize()
+    Me.Width = 400
+    Me.Height = 200
+    Me.Caption = "Funciones Administrativas - " & Format(Date, "dd/mm/yyyy")
+End Sub
+
+Private Sub btnBackup_Click()
+    On Error GoTo ErrorHandler
+    
+    Dim rutaBackup As String
+    rutaBackup = ThisWorkbook.Path & "\Backups\"
+    
+    If Dir(rutaBackup, vbDirectory) = "" Then
+        MkDir rutaBackup
+    End If
+    
+    Dim nombreBackup As String
+    nombreBackup = "Backup_" & Format(Now, "ddmmyyyy_hhmm") & ".xlsm"
+    
+    ThisWorkbook.Save ' Guardar cambios primero
+    ThisWorkbook.SaveCopyAs rutaBackup & nombreBackup
+    
+    MsgBox "? Backup guardado" & vbCrLf & _
+           "Archivo: " & nombreBackup, vbInformation
+    
+    Exit Sub
+ErrorHandler:
+    MsgBox "Error: " & Err.Description, vbCritical
+End Sub
+
+Private Sub btnCierreCaja_Click()
+    Dim ventasDia As Double
+    Dim cantVentas As Integer
+    Dim fila As Long
+    Dim wsVentas As Worksheet
+    Set wsVentas = ThisWorkbook.Sheets("Ventas")
+    
+    ' Contar ventas del día
+    Dim ventasUnicas As Object
+    Set ventasUnicas = CreateObject("Scripting.Dictionary")
+    
+    For fila = 2 To wsVentas.Cells(wsVentas.Rows.Count, "A").End(xlUp).Row
+        If wsVentas.Cells(fila, 1).Value = Date Then
+            If wsVentas.Cells(fila, 10).Value <> "ANULADA" Then
+                ventasDia = ventasDia + wsVentas.Cells(fila, 9).Value
+                
+                Dim numVenta As Long
+                numVenta = wsVentas.Cells(fila, 3).Value
+                If Not ventasUnicas.Exists(numVenta) Then
+                    ventasUnicas.Add numVenta, 1
+                End If
+            End If
+        End If
+    Next fila
+    
+    cantVentas = ventasUnicas.Count
+    
+    Dim mensaje As String
+    mensaje = "-----------------------" & vbCrLf & _
+              "   CIERRE DE CAJA" & vbCrLf & _
+              "-----------------------" & vbCrLf & vbCrLf & _
+              "Fecha: " & Format(Date, "dd/mm/yyyy") & vbCrLf & vbCrLf & _
+              "Total Vendido: " & Format(ventasDia, "$#,##0") & vbCrLf & _
+              "Cantidad Ventas: " & cantVentas & vbCrLf
+              
+    If cantVentas > 0 Then
+        mensaje = mensaje & "Promedio: " & Format(ventasDia / cantVentas, "$#,##0")
+    End If
+    
+    MsgBox mensaje, vbInformation, "Cierre del Día"
+End Sub
+
+Private Sub btnStockBajo_Click()
+    Dim wsProductos As Worksheet
+    Set wsProductos = ThisWorkbook.Sheets("Hoja1")
+    
+    Dim mensaje As String
+    Dim fila As Long
+    Dim contador As Integer
+    
+    mensaje = "PRODUCTOS CON STOCK BAJO:" & vbCrLf & _
+              "----------------------" & vbCrLf & vbCrLf
+    
+    For fila = 3 To wsProductos.Cells(wsProductos.Rows.Count, "A").End(xlUp).Row
+        Dim stock As Long
+        stock = wsProductos.Cells(fila, 5).Value
+        
+        If stock <= 5 Then
+            contador = contador + 1
+            mensaje = mensaje & contador & ". " & Left(wsProductos.Cells(fila, 2).Value, 25) & _
+                     " [Stock: " & stock & "]" & vbCrLf
+            
+            If contador >= 15 Then
+                mensaje = mensaje & vbCrLf & "... y más productos"
+                Exit For
+            End If
+        End If
+    Next fila
+    
+    If contador = 0 Then
+        mensaje = mensaje & "? Todos los productos tienen stock suficiente"
+    End If
+    
+    MsgBox mensaje, vbInformation, "Control de Stock"
+End Sub
+
+Private Sub btnReporteMensual_Click()
+    Dim wsVentas As Worksheet
+    Set wsVentas = ThisWorkbook.Sheets("Ventas")
+    
+    Dim ventasMes As Double
+    Dim fila As Long
+    
+    For fila = 2 To wsVentas.Cells(wsVentas.Rows.Count, "A").End(xlUp).Row
+        If Month(wsVentas.Cells(fila, 1).Value) = Month(Date) And _
+           Year(wsVentas.Cells(fila, 1).Value) = Year(Date) And _
+           wsVentas.Cells(fila, 10).Value <> "ANULADA" Then
+            ventasMes = ventasMes + wsVentas.Cells(fila, 9).Value
+        End If
+    Next fila
+    
+    MsgBox "VENTAS DEL MES" & vbCrLf & vbCrLf & _
+           Format(Date, "mmmm yyyy") & vbCrLf & vbCrLf & _
+           "Total: " & Format(ventasMes, "$#,##0"), _
+           vbInformation
+End Sub
+
+Private Sub btnCerrar_Click()
+    Unload Me
+End Sub
+
+Private Sub btnAjustesINV_Click()
+    frmAjusteInventario.Show vbModeless
+    
+End Sub
+
+Private Sub btnCompras_Click()
+    On Error GoTo ErrorHandler
+    
+    ' Intentar cargar el formulario si no está cargado
+    Load frmCompras
+    
+    ' Mostrarlo en modo no-modal
+    frmCompras.Show vbModeless
+    
+    ' Cerrar Admin
+    Unload Me
+    
+    Exit Sub
+    
+ErrorHandler:
+    ' Si ya estaba cargado, solo mostrarlo
+    If Err.Number = 360 Then ' Object already loaded
+        frmCompras.Show vbModeless
+        Unload Me
+    Else
+        MsgBox "Error abriendo compras: " & Err.Description
+    End If
+End Sub
+Private Sub btnNuevoProveedor_Click()
+    frmNuevoProveedor.Show vbModal
+    
+End Sub
+
+

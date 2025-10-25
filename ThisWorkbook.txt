@@ -1,0 +1,34 @@
+Private Sub Workbook_Open()
+
+    Call modCacheGlobal.InicializarSistemaRapido
+
+' Ocultar todas las hojas al inicio
+    Application.ScreenUpdating = False
+    
+    Dim ws As Worksheet
+    For Each ws In ThisWorkbook.Worksheets
+        If ws.Name <> "Usuarios" Then ' No ocultar la hoja de usuarios (ya está muy oculta)
+            ws.Visible = xlSheetVisible
+        End If
+    Next ws
+    
+    ' Mostrar login
+    frmLogin.Show
+    
+    Application.ScreenUpdating = True
+
+    ' Configurar ventana
+    Application.WindowState = xlMaximized       ' Pantalla completa
+    Application.DisplayFullScreen = False       ' Mantener menús visibles
+    
+    ' Ir a la hoja POS
+    ThisWorkbook.Sheets("POS").Activate
+    
+    ' Seleccionar celda A1 para que se vea limpio
+    Range("A1").Select
+
+    ' Simplemente abrir el UserForm al iniciar
+    frmPOS.Show
+    
+    
+End Sub
