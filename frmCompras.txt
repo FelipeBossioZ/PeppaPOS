@@ -4,6 +4,17 @@
 
 Option Explicit
 
+' Convierte Null a vacío para evitar errores en las listas
+Private Function Nz(v As Variant, Optional rep As Variant = "") As Variant
+    If IsError(v) Then
+        Nz = rep
+    ElseIf IsNull(v) Or IsEmpty(v) Then
+        Nz = rep
+    Else
+        Nz = v
+    End If
+End Function
+
 ' Variables globales
 Dim wsProductos As Worksheet
 Dim wsCompras As Worksheet
@@ -752,8 +763,8 @@ Private Sub lstCarrito_DblClick(ByVal Cancel As MSForms.ReturnBoolean)
 
     ' Limpiar y cargar valores numéricos
     Dim precio As String, pVenta As String
-    precio = Replace(Replace(Me.lstCarrito.List(i, 3), "$", ""), ".", "")
-    pVenta = Replace(Replace(Me.lstCarrito.List(i, 10), "$", ""), ".", "")
+    precio = Replace(Replace(Nz(Me.lstCarrito.List(i, 3)), "$", ""), ".", "")
+    pVenta = Replace(Replace(Nz(Me.lstCarrito.List(i, 10)), "$", ""), ".", "")
 
     Me.txtPrecioUnitario.Text = Val(precio)
     Me.txtPrecioVenta.Text = Val(pVenta)

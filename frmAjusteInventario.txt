@@ -810,25 +810,43 @@ End Sub
 Private Sub txtBuscarAjuste_KeyPress(ByVal KeyAscii As MSForms.ReturnInteger)
     ' Si se presiona Enter
     If KeyAscii = 13 Then
-        ' Verificar si la lista de resultados está vacía (solo contiene el encabezado)
-        Dim hayResultados As Boolean
-        If Me.lstProductosAjuste.ListCount > 1 Then
-             ' Si la primera fila de datos tiene un código, hay resultados
-            If Me.lstProductosAjuste.List(1, 0) <> "" Then
-                hayResultados = True
-            Else
-                hayResultados = False
-            End If
-        Else
-            hayResultados = False
-        End If
-
-        ' Si no hay resultados y hay texto en la búsqueda, activar Alta Rápida
-        If Not hayResultados And Len(Trim$(Me.txtBuscarAjuste.Text)) > 0 Then
-            PrepararAltaRapida Trim$(Me.txtBuscarAjuste.Text)
-            KeyAscii = 0 ' Cancelar el sonido de "beep" del Enter
-        End If
+        ' Llamar a la lógica de verificación
+        Call VerificarYPrepararAltaRapida
+        ' Cancelar el sonido de "beep" del Enter para que no suene en el formulario
+        KeyAscii = 0
     End If
 End Sub
 
+' Subrutina nueva y más clara para manejar la lógica de Alta Rápida
+Sub VerificarYPrepararAltaRapida()
+    ' Verificar si la lista de resultados está vacía (solo contiene el encabezado)
+    Dim hayResultados As Boolean
+    If Me.lstProductosAjuste.ListCount > 1 Then
+         ' Si la primera fila de datos tiene un código, hay resultados
+        If Nz(Me.lstProductosAjuste.List(1, 0)) <> "" Then
+            hayResultados = True
+        Else
+            hayResultados = False
+        End If
+    Else
+        hayResultados = False
+    End If
+
+    ' Si no hay resultados y hay texto en la búsqueda, activar Alta Rápida
+    If Not hayResultados And Len(Trim$(Me.txtBuscarAjuste.Text)) > 0 Then
+        ' Usar Nz para asegurar que no haya errores si el texto es nulo
+        PrepararAltaRapida Trim$(Nz(Me.txtBuscarAjuste.Text))
+    End If
+End Sub
+
+' Convierte Null a vacío para evitar errores en las listas
+Private Function Nz(v As Variant, Optional rep As Variant = "") As Variant
+    If IsError(v) Then
+        Nz = rep
+    ElseIf IsNull(v) Or IsEmpty(v) Then
+        Nz = rep
+    Else
+        Nz = v
+    End If
+End Function
 

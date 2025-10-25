@@ -4628,10 +4628,16 @@ Private Sub txtBuscar_Change()
 End Sub
 
 
-' Llamable desde Compras
+' Llamable desde Compras o AjusteInventario
 Public Sub RefrescarCatalogo()
+    ' Marcar el caché como desactualizado
     catCargado = False
+
+    ' Volver a cargar los datos desde la hoja de Excel a la memoria
     CargarCatalogoEnMemoria
-    PintarLista Me.txtBuscar.Text   ' respeta el filtro que el usuario tenga escrito
+
+    ' Volver a dibujar la lista de productos en el formulario,
+    ' respetando cualquier filtro que el usuario tenga escrito en la caja de búsqueda.
+    PintarLista Me.txtBuscar.Text
 End Sub
 
