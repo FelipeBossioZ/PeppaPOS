@@ -4,6 +4,14 @@
 
 Option Explicit
 
+' Variables globales
+Dim wsProductos As Worksheet
+Dim wsCompras As Worksheet
+Dim wsProveedores As Worksheet
+Dim numeroCompra As Long
+Dim ProductoNuevo As Boolean
+Dim UltimoTextBoxSeleccionado As String
+
 ' Convierte Null a vacío para evitar errores en las listas
 Private Function Nz(v As Variant, Optional rep As Variant = "") As Variant
     If IsError(v) Then
@@ -14,14 +22,6 @@ Private Function Nz(v As Variant, Optional rep As Variant = "") As Variant
         Nz = v
     End If
 End Function
-
-' Variables globales
-Dim wsProductos As Worksheet
-Dim wsCompras As Worksheet
-Dim wsProveedores As Worksheet
-Dim numeroCompra As Long
-Dim ProductoNuevo As Boolean
-Dim UltimoTextBoxSeleccionado As String
 ' ==================================================
 ' FUNCIÓN GENERAL PARA SELECCIONAR TODO EL TEXTO
 ' ==================================================

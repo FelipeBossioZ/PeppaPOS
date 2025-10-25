@@ -5,6 +5,17 @@
 
 Option Explicit
 
+' Convierte Null a vacío para evitar errores en las listas
+Private Function Nz(v As Variant, Optional rep As Variant = "") As Variant
+    If IsError(v) Then
+        Nz = rep
+    ElseIf IsNull(v) Or IsEmpty(v) Then
+        Nz = rep
+    Else
+        Nz = v
+    End If
+End Function
+
 ' === VARIABLES GLOBALES ===
 Dim wsProductos As Worksheet
 Dim filaActual As Long
@@ -287,10 +298,11 @@ Sub MostrarProductosEnLista(textoBusqueda As String)
         End If
     Next key
     
-    ' Si no hay resultados
+    ' Si no hay resultados, mostrar mensaje en la barra de estado
     If mostrados = 0 And busquedaUpper <> "" Then
-        Me.lstProductosAjuste.AddItem
-        Me.lstProductosAjuste.List(1, 1) = "No se encontraron productos"
+        Application.StatusBar = "Producto no encontrado. Presione Enter para crearlo."
+    Else
+        Application.StatusBar = mostrados & " producto(s) encontrado(s)."
     End If
 End Sub
 ' prepara el formulario para crear el producto que se está buscando
@@ -808,45 +820,20 @@ Private Sub btnEstadisticas_Click()
 End Sub
 
 Private Sub txtBuscarAjuste_KeyPress(ByVal KeyAscii As MSForms.ReturnInteger)
-    ' Si se presiona Enter
+    ' Si se presiona Enter, se activa la lógica de creación de producto
     If KeyAscii = 13 Then
-        ' Llamar a la lógica de verificación
         Call VerificarYPrepararAltaRapida
-        ' Cancelar el sonido de "beep" del Enter para que no suene en el formulario
-        KeyAscii = 0
+        KeyAscii = 0 ' Cancela el "beep" del Enter
     End If
 End Sub
 
-' Subrutina nueva y más clara para manejar la lógica de Alta Rápida
+' Subrutina simplificada para manejar la lógica de Alta Rápida
 Sub VerificarYPrepararAltaRapida()
-    ' Verificar si la lista de resultados está vacía (solo contiene el encabezado)
-    Dim hayResultados As Boolean
-    If Me.lstProductosAjuste.ListCount > 1 Then
-         ' Si la primera fila de datos tiene un código, hay resultados
-        If Nz(Me.lstProductosAjuste.List(1, 0)) <> "" Then
-            hayResultados = True
-        Else
-            hayResultados = False
-        End If
-    Else
-        hayResultados = False
-    End If
-
-    ' Si no hay resultados y hay texto en la búsqueda, activar Alta Rápida
-    If Not hayResultados And Len(Trim$(Me.txtBuscarAjuste.Text)) > 0 Then
-        ' Usar Nz para asegurar que no haya errores si el texto es nulo
-        PrepararAltaRapida Trim$(Nz(Me.txtBuscarAjuste.Text))
+    ' Si la lista de resultados solo tiene el encabezado (ListCount=1)
+    ' y hay texto en la búsqueda, entonces es un producto nuevo.
+    If Me.lstProductosAjuste.ListCount <= 1 And Len(Trim$(Me.txtBuscarAjuste.Text)) > 0 Then
+        PrepararAltaRapida Trim$(Me.txtBuscarAjuste.Text)
     End If
 End Sub
 
-' Convierte Null a vacío para evitar errores en las listas
-Private Function Nz(v As Variant, Optional rep As Variant = "") As Variant
-    If IsError(v) Then
-        Nz = rep
-    ElseIf IsNull(v) Or IsEmpty(v) Then
-        Nz = rep
-    Else
-        Nz = v
-    End If
-End Function
 
