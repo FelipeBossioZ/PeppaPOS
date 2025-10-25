@@ -1,0 +1,6 @@
+# Ignorar archivos de base de datos de SQLite
+*.db
+*.db-journal
+
+# Ignorar archivos temporales de Excel
+~$*.xlsm

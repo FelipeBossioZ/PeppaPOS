@@ -636,6 +636,11 @@ SpeedOff:     MsgBox "Error: " & Err.Description
 End Sub
 
 ' Suma al stock y actualiza costo/precio de venta en Hoja1
+' NOTA: Se ha eliminado intencionadamente el bloque 'Else' que creaba un producto
+' si no lo encontraba. La creación de productos debe ser manejada exclusivamente
+' por la subrutina 'CrearProductoEnInventario' para evitar la creación de duplicados
+' "SIN NOMBRE" cuando el sistema de búsqueda de Excel (.Find) no localiza
+' un producto recién añadido.
 Public Sub ActualizarInventario(ByVal codigo As String, _
                                 ByVal cantidad As Double, _
                                 ByVal costo As Double, _
@@ -651,14 +656,6 @@ Public Sub ActualizarInventario(ByVal codigo As String, _
             .Cells(f, 6).Value = Val(pventa)
             .Cells(f, 15).Value = "Compra: " & Format(Now, "dd/mm HH:nn")
             .Cells(f, 16).Value = " +" & CStr(cantidad) & " (Stock=" & .Cells(f, 5).Value & ")"
-        Else
-            ' (opcional) crear producto si no existe
-            f = .Cells(.Rows.Count, "A").End(xlUp).Row + 1
-            .Cells(f, 1).Value = codigo
-            .Cells(f, 2).Value = "SIN NOMBRE"
-            .Cells(f, 4).Value = Val(costo)
-            .Cells(f, 5).Value = Val(cantidad)
-            .Cells(f, 6).Value = Val(pventa)
         End If
     End With
 
