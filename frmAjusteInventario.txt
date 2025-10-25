@@ -217,11 +217,12 @@ Private Sub txtBuscarAjuste_Change()
         hayDatos = (Len(CStr(Me.lstProductosAjuste.List(1, 0) & "")) > 0)
     End If
 
-    If Len(q) > 0 And Not hayDatos Then
-        ' nada encontrado -> pasar a ALTA RÁPIDA
-        Me.lstProductosAjuste.ListIndex = -1   ' evita selección fantasma
-        PrepararAltaRapida q                   ' habilita controles y rellena COD
-    End If
+    ' Este código se moverá al evento KeyPress para activarse solo con Enter
+    ' If Len(q) > 0 And Not hayDatos Then
+    '     ' nada encontrado -> pasar a ALTA RÁPIDA
+    '     Me.lstProductosAjuste.ListIndex = -1   ' evita selección fantasma
+    '     PrepararAltaRapida q                   ' habilita controles y rellena COD
+    ' End If
 End Sub
 
 
@@ -442,7 +443,17 @@ Private Sub btnGuardarAjuste_Click()
 
     ' refrescar lista y limpiar para el siguiente
     Call MostrarProductosEnLista("")
-    Call modSincronizacion.RefrescarPOS
+
+    ' --- INICIO: Refresco del POS en tiempo real ---
+    On Error Resume Next ' Si frmPOS no está abierto, simplemente continúa
+    Dim frm As Object
+    Set frm = VBA.UserForms("frmPOS")
+    If Not frm Is Nothing Then
+        frm.RefrescarCatalogo
+    End If
+    On Error GoTo 0
+    ' --- FIN: Refresco del POS ---
+
     Call LimpiarParaSiguiente
     Application.StatusBar = "[OK] " & IIf(esAlta, "Creado", "Guardado") & " ?"
  
@@ -795,10 +806,25 @@ Private Sub btnEstadisticas_Click()
 End Sub
 
 Private Sub txtBuscarAjuste_KeyPress(ByVal KeyAscii As MSForms.ReturnInteger)
+    ' Si se presiona Enter
     If KeyAscii = 13 Then
-        If Me.lstProductosAjuste.ListCount <= 1 Then
+        ' Verificar si la lista de resultados está vacía (solo contiene el encabezado)
+        Dim hayResultados As Boolean
+        If Me.lstProductosAjuste.ListCount > 1 Then
+             ' Si la primera fila de datos tiene un código, hay resultados
+            If Me.lstProductosAjuste.List(1, 0) <> "" Then
+                hayResultados = True
+            Else
+                hayResultados = False
+            End If
+        Else
+            hayResultados = False
+        End If
+
+        ' Si no hay resultados y hay texto en la búsqueda, activar Alta Rápida
+        If Not hayResultados And Len(Trim$(Me.txtBuscarAjuste.Text)) > 0 Then
             PrepararAltaRapida Trim$(Me.txtBuscarAjuste.Text)
-            KeyAscii = 0
+            KeyAscii = 0 ' Cancelar el sonido de "beep" del Enter
         End If
     End If
 End Sub

@@ -68,9 +68,9 @@ Private Sub UserForm_Initialize()
         Set wsCompras = ThisWorkbook.Sheets.Add
         wsCompras.Name = "Compras"
         ' Crear encabezados
-        With wsCompras.Range("A1:O1")
+        With wsCompras.Range("A1:P1") ' Ampliado a P
             .Value = Array("Fecha", "Hora", "No.Compra", "Proveedor", "Código", _
-                          "Producto", "Cantidad", "P.Unitario", "Subtotal", "Lote", _
+                          "Producto", "Cantidad", "P.Unitario", "Subtotal", "Valor IVA", "Lote", _
                           "Descuento%", "Total c/Desc", "Unidad", "P.Venta", "Ult.Costo")
             .Font.Bold = True
             .Interior.Color = RGB(200, 200, 200)
@@ -172,8 +172,8 @@ Sub ConfigurarControles()
     
     ' Configurar ListBox del carrito
     With Me.lstCarrito
-        .ColumnCount = 10
-        .ColumnWidths = "50;150;50;60;60;40;70;40;60;60"
+        .ColumnCount = 12 ' Aumentado para IVA
+        .ColumnWidths = "50;150;50;60;50;50;60;40;70;40;60;60" 'Ajustado para IVA
     End With
     
     ' Valores predeterminados
@@ -182,6 +182,15 @@ Sub ConfigurarControles()
     Me.cmbUnidad.List = Array("UND", "CAJA", "SOBRE", "PAQUETE", "KG", "GRAMO", "LITRO")
     Me.cmbUnidad.ListIndex = 0
     
+    ' --- NUEVO: Configuración de IVA ---
+    With Me.cmbIVA
+        .List = Array("19%", "5%", "0%")
+        .ListIndex = 0 ' Por defecto 19%
+    End With
+    Me.txtValorIVA.Locked = True
+    Me.txtValorIVA.Text = "$0"
+    ' --- FIN NUEVO ---
+
     ' Bloquear campos automáticos
     Me.txtFecha.Locked = True
     Me.txtHora.Locked = True
@@ -378,20 +387,38 @@ Private Sub txtDescuento_Change()
     CalcularSubtotal
 End Sub
 
+Private Sub cmbIVA_Change()
+    CalcularSubtotal
+End Sub
+
 Sub CalcularSubtotal()
     On Error Resume Next
     
     Dim cantidad As Double
-    Dim precio As Double
+    Dim precioBase As Double ' Precio antes de IVA
     Dim descuento As Double
+    Dim porcIVA As Double
+    Dim valorIVA As Double
+    Dim precioConIVA As Double
     Dim subtotal As Double
     Dim totalConDesc As Double
     
+    ' --- CÁLCULO DE IVA ---
     cantidad = Val(Me.txtCantidad.Text)
-    precio = Val(Me.txtPrecioUnitario.Text)
+    precioBase = Val(Me.txtPrecioUnitario.Text)
+    porcIVA = Val(Replace(Me.cmbIVA.Text, "%", "")) / 100
+
+    valorIVA = (precioBase * cantidad) * porcIVA
+    Me.txtValorIVA.Text = Format(valorIVA, "$#,##0")
+
+    ' El costo final del producto es el precio base + su IVA
+    precioConIVA = precioBase * (1 + porcIVA)
+
+    ' --- CÁLCULOS EXISTENTES (ahora basados en el precio con IVA) ---
     descuento = Val(Me.txtDescuento.Text)
     
-    subtotal = cantidad * precio
+    ' El subtotal ahora se calcula sobre el precio que ya incluye el IVA
+    subtotal = cantidad * precioConIVA
     totalConDesc = subtotal * (1 - descuento / 100)
     
     Me.txtSubtotal.Text = Format(subtotal, "$#,##0")
@@ -455,11 +482,12 @@ Dim t As Double: t = TNow
     Me.lstCarrito.List(idx, 4) = Me.txtSubtotal.Text
     Me.lstCarrito.List(idx, 5) = Me.txtDescuento.Text & "%"
     Me.lstCarrito.List(idx, 6) = Me.txtTotalConDesc.Text
-    Me.lstCarrito.List(idx, 7) = Me.cmbUnidad.Text
-    Me.lstCarrito.List(idx, 8) = Format(Val(Me.txtPrecioVenta.Text), "$#,##0")
-    Me.lstCarrito.List(idx, 9) = Me.txtLote.Text
+    Me.lstCarrito.List(idx, 7) = Me.cmbIVA.Text ' Porcentaje IVA
+    Me.lstCarrito.List(idx, 8) = Me.txtValorIVA.Text ' Valor IVA
+    Me.lstCarrito.List(idx, 9) = Me.cmbUnidad.Text
+    Me.lstCarrito.List(idx, 10) = Format(Val(Me.txtPrecioVenta.Text), "$#,##0")
+    Me.lstCarrito.List(idx, 11) = Me.txtLote.Text
     
-        
     ' Calcular total
     CalcularTotalCompra
     CalcularSubtotalCarrito  ' AGREGAR ESTA LÍNEA
@@ -575,21 +603,29 @@ Sub FinalizarCompra()
             subtotal = Replace(subtotal, ".", "")
             .Cells(filaCompra, 9).Value = Val(subtotal)
             
-            .Cells(filaCompra, 10).Value = Me.lstCarrito.List(i, 9) ' Lote
-            .Cells(filaCompra, 11).Value = Val(Replace(Me.lstCarrito.List(i, 5), "%", "")) ' Descuento
+            ' --- NUEVO: Guardar Valor IVA ---
+            Dim valorIVA As String
+            valorIVA = Me.lstCarrito.List(i, 8) ' Columna del valor IVA
+            valorIVA = Replace(valorIVA, "$", "")
+            valorIVA = Replace(valorIVA, ".", "")
+            .Cells(filaCompra, 10).Value = Val(valorIVA)
+            ' --- FIN NUEVO ---
+
+            .Cells(filaCompra, 11).Value = Me.lstCarrito.List(i, 11) ' Lote
+            .Cells(filaCompra, 12).Value = Val(Replace(Me.lstCarrito.List(i, 5), "%", "")) ' Descuento
             
             ' Total con descuento
             Dim totalDesc As String
             totalDesc = Me.lstCarrito.List(i, 6)
             totalDesc = Replace(totalDesc, "$", "")
             totalDesc = Replace(totalDesc, ".", "")
-            .Cells(filaCompra, 12).Value = Val(totalDesc)
+            .Cells(filaCompra, 13).Value = Val(totalDesc)
             
-            .Cells(filaCompra, 13).Value = Me.lstCarrito.List(i, 7) ' Unidad
+            .Cells(filaCompra, 14).Value = Me.lstCarrito.List(i, 9) ' Unidad
             
             ' Precio venta
             Dim pventa As String
-            pventa = Me.lstCarrito.List(i, 8)
+            pventa = Me.lstCarrito.List(i, 10)
             pventa = Replace(pventa, "$", "")
             pventa = Replace(pventa, ".", "")
             .Cells(filaCompra, 14).Value = Val(pventa)
@@ -703,6 +739,39 @@ Sub LimpiarFormulario()
     Me.Caption = "MÓDULO DE COMPRAS - Compra #" & numeroCompra
 End Sub
 
+Private Sub lstCarrito_DblClick(ByVal Cancel As MSForms.ReturnBoolean)
+    If Me.lstCarrito.ListIndex < 0 Then Exit Sub
+
+    Dim i As Integer
+    i = Me.lstCarrito.ListIndex
+
+    ' Cargar datos en los campos de edición
+    Me.txtCodigo.Text = Me.lstCarrito.List(i, 0)
+    Me.txtProducto.Text = Me.lstCarrito.List(i, 1)
+    Me.txtCantidad.Text = Me.lstCarrito.List(i, 2)
+
+    ' Limpiar y cargar valores numéricos
+    Dim precio As String, pVenta As String
+    precio = Replace(Replace(Me.lstCarrito.List(i, 3), "$", ""), ".", "")
+    pVenta = Replace(Replace(Me.lstCarrito.List(i, 10), "$", ""), ".", "")
+
+    Me.txtPrecioUnitario.Text = Val(precio)
+    Me.txtPrecioVenta.Text = Val(pVenta)
+    Me.txtDescuento.Text = Val(Me.lstCarrito.List(i, 5))
+    Me.cmbIVA.Text = Me.lstCarrito.List(i, 7)
+    Me.cmbUnidad.Text = Me.lstCarrito.List(i, 9)
+
+    ' Guardar el índice del item que se está editando
+    Me.btnActualizar.Tag = i
+
+    ' Cambiar a modo edición
+    Me.btnAgregarCarrito.Visible = False
+    Me.btnActualizar.Visible = True
+
+    ' Cancelar el evento para evitar comportamientos inesperados
+    Cancel = True
+End Sub
+
 Sub LimpiarCamposProducto()
     Me.txtCodigo.Text = ""
     Me.txtProducto.Text = ""
@@ -720,6 +789,55 @@ Sub LimpiarCamposProducto()
     Me.cmbUnidad.ListIndex = 0
     Me.lblNuevoProducto.Caption = ""
     ProductoNuevo = False
+
+    ' --- NUEVO: Restaurar modo de agregación ---
+    Me.btnAgregarCarrito.Visible = True
+    Me.btnActualizar.Visible = False
+    Me.btnActualizar.Tag = "" ' Limpiar índice de edición
+    Me.cmbIVA.ListIndex = 0 ' Resetear IVA
+    ' --- FIN NUEVO ---
+End Sub
+
+Private Sub btnActualizar_Click()
+    ' Validar que se está en modo edición
+    If Me.btnActualizar.Tag = "" Then Exit Sub
+
+    Dim i As Integer
+    i = CInt(Me.btnActualizar.Tag)
+
+    ' Validaciones (igual que en AgregarAlCarrito)
+    If Val(Me.txtCantidad.Text) <= 0 Then
+        MsgBox "Ingrese cantidad válida"
+        Exit Sub
+    End If
+    If Val(Me.txtPrecioUnitario.Text) <= 0 Then
+        MsgBox "Ingrese precio de compra"
+        Exit Sub
+    End If
+    If Val(Me.txtPrecioVenta.Text) <= 0 Then
+        MsgBox "Ingrese precio de venta"
+        Exit Sub
+    End If
+
+    ' Actualizar la fila en el carrito
+    With Me.lstCarrito
+        .List(i, 1) = Me.txtProducto.Text
+        .List(i, 2) = Me.txtCantidad.Text
+        .List(i, 3) = Format(Val(Me.txtPrecioUnitario.Text), "$#,##0")
+        .List(i, 4) = Me.txtSubtotal.Text
+        .List(i, 5) = Me.txtDescuento.Text & "%"
+        .List(i, 6) = Me.txtTotalConDesc.Text
+        .List(i, 7) = Me.cmbIVA.Text
+        .List(i, 8) = Me.txtValorIVA.Text
+        .List(i, 9) = Me.cmbUnidad.Text
+        .List(i, 10) = Format(Val(Me.txtPrecioVenta.Text), "$#,##0")
+    End With
+
+    ' Recalcular total y limpiar
+    CalcularTotalCompra
+    CalcularSubtotalCarrito
+    LimpiarCamposProducto
+    Me.txtBuscar.SetFocus
 End Sub
 
 Private Sub btnCerrar_Click()

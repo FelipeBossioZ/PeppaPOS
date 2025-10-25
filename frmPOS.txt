@@ -180,6 +180,24 @@ Private Sub UserForm_Initialize()
     'Inicial con el mouse en buscar
     
     Call ActualizarVentasDelDia
+
+    ' --- INICIO: Comprobar si hay una venta pendiente ---
+    On Error Resume Next
+    Dim wsTemp As Worksheet
+    Set wsTemp = ThisWorkbook.Sheets("VentaTemporal")
+    If Not wsTemp Is Nothing Then
+        If Not IsEmpty(wsTemp.Range("A1").Value) Then
+            If MsgBox("Se encontró una venta sin finalizar. ¿Desea restaurarla?", vbYesNo + vbQuestion) = vbYes Then
+                Call RestaurarVentaTemporal
+            Else
+                ' Si el usuario dice no, limpiar la hoja para no volver a preguntar
+                wsTemp.Cells.Clear
+            End If
+        End If
+    End If
+    On Error GoTo 0
+    ' --- FIN: Comprobar venta pendiente ---
+
     Exit Sub
     
     
@@ -941,6 +959,101 @@ ErrorHandler:
     MsgBox "Error eliminando producto: " & Err.Description, vbCritical
 End Sub
 
+' --- INICIO: Edición de productos en el carrito ---
+Private Sub lstVenta_DblClick(ByVal Cancel As MSForms.ReturnBoolean)
+    If Me.lstVenta.ListIndex < 0 Then Exit Sub
+
+    Dim i As Integer
+    i = Me.lstVenta.ListIndex
+
+    ' Cargar cantidad en el campo de texto
+    Me.txtCantidad.Text = Me.lstVenta.List(i, 2)
+
+    ' Mostrar el nombre del artículo que se está editando
+    Me.lblArticulo.Caption = "Editando: " & Me.lstVenta.List(i, 1)
+    Me.lblArticulo.Visible = True
+
+    ' Guardar el índice del item que se está editando
+    Me.btnActualizarVenta.Tag = i
+
+    ' Cambiar a modo edición
+    Me.btnAgregar.Visible = False
+    Me.btnActualizarVenta.Visible = True
+
+    ' Poner el foco en la cantidad y seleccionar el texto
+    Me.txtCantidad.SetFocus
+    Me.txtCantidad.SelStart = 0
+    Me.txtCantidad.SelLength = Len(Me.txtCantidad.Text)
+
+    Cancel = True
+End Sub
+
+Private Sub btnActualizarVenta_Click()
+    ' Validar que se está en modo edición
+    If Me.btnActualizarVenta.Tag = "" Then Exit Sub
+
+    Dim i As Integer
+    i = CInt(Me.btnActualizarVenta.Tag)
+
+    ' Obtener nueva cantidad y validar
+    Dim nuevaCantidad As Integer
+    nuevaCantidad = Val(Me.txtCantidad.Text)
+    If nuevaCantidad <= 0 Then
+        MsgBox "Ingrese una cantidad válida", vbExclamation
+        Exit Sub
+    End If
+
+    ' Obtener el código del producto para buscar su precio
+    Dim codigo As String
+    codigo = Me.lstVenta.List(i, 0)
+
+    ' Buscar el precio unitario del producto en la lista de productos
+    Dim precioUnitario As Double
+    Dim j As Integer
+    Dim encontrado As Boolean
+    encontrado = False
+    For j = 0 To Me.lstProductos.ListCount - 1
+        If Me.lstProductos.List(j, 0) = codigo Then
+            Dim precioTexto As String
+            precioTexto = Me.lstProductos.List(j, 2)
+            precioTexto = Replace(Replace(precioTexto, "$", ""), ".", "")
+            precioUnitario = Val(precioTexto)
+            encontrado = True
+            Exit For
+        End If
+    Next j
+
+    If Not encontrado Then
+        MsgBox "No se pudo encontrar el precio del producto para recalcular. Intente de nuevo.", vbExclamation
+        Exit Sub
+    End If
+
+    ' Actualizar la fila en el carrito
+    With Me.lstVenta
+        .List(i, 2) = nuevaCantidad
+        .List(i, 3) = Format(precioUnitario * nuevaCantidad, "$#,##0")
+    End With
+
+    ' Recalcular total y limpiar para volver al modo normal
+    Call CalcularTotal
+    Call LimpiarVentaParcial
+End Sub
+
+' Limpia los campos para una nueva venta, pero sin borrar el carrito
+Sub LimpiarVentaParcial()
+    Me.txtBuscar.Text = ""
+    Me.txtCantidad.Text = "1"
+    Me.lblArticulo.Visible = False
+
+    ' Restaurar botones a modo "Agregar"
+    Me.btnAgregar.Visible = True
+    Me.btnActualizarVenta.Visible = False
+    Me.btnActualizarVenta.Tag = ""
+
+    Me.txtBuscar.SetFocus
+End Sub
+' --- FIN: Edición de productos en el carrito ---
+
 Sub CalcularTotal()
     On Error GoTo ErrorHandler
     
@@ -1053,7 +1166,7 @@ For i = 0 To Me.lstVenta.ListCount - 1
     
     ' Preparar para siguiente venta
     numeroVenta = numeroVentaActual + 1
-    Call LimpiarVenta
+    Call LimpiarVenta ' LimpiarVenta ya se encarga de limpiar la hoja temporal
     Call ActualizarVentasDelDia
     Exit Sub
     
@@ -1091,6 +1204,12 @@ End Sub
 Sub LimpiarVenta()
     On Error GoTo ErrorHandler
     
+    ' --- NUEVO: Limpiar venta temporal ---
+    On Error Resume Next
+    ThisWorkbook.Sheets("VentaTemporal").Cells.Clear
+    On Error GoTo 0
+    ' --- FIN NUEVO ---
+
     Me.lstVenta.Clear
     Me.lblTotal.Caption = "$ 0.00"
     Me.txtBuscar.Text = ""
@@ -3706,6 +3825,21 @@ End Sub
 'End Sub
 
 Private Sub UserForm_QueryClose(Cancel As Integer, CloseMode As Integer)
+    ' --- INICIO: Guardar venta no finalizada ---
+    If Me.lstVenta.ListCount > 0 Then
+        ' Preguntar al usuario si quiere guardar la venta como pendiente
+        Dim respuesta As VbMsgBoxResult
+        respuesta = MsgBox("Tiene una venta en curso. ¿Desea guardarla como pendiente para continuarla después?", _
+                           vbYesNoCancel + vbQuestion, "Venta Pendiente")
+
+        If respuesta = vbYes Then
+            Call GuardarVentaTemporal
+        ElseIf respuesta = vbCancel Then
+            Cancel = True ' Evita que el formulario se cierre
+            Exit Sub
+        End If
+    End If
+    ' --- FIN: Guardar venta no finalizada ---
 
      ' Atajo: Si presionas SHIFT al cerrar, sale sin backup
     If GetAsyncKeyState(&H10) < 0 Then ' &H10 es la tecla SHIFT
@@ -3976,6 +4110,68 @@ Sub CambiarDeUsuario()
     End If
 End Sub
 
+
+' --- INICIO: Lógica para guardar y restaurar ventas temporales ---
+Sub GuardarVentaTemporal()
+    On Error GoTo ErrorHandler
+
+    Dim wsTemp As Worksheet
+
+    ' Crear hoja si no existe y hacerla muy oculta
+    On Error Resume Next
+    Set wsTemp = ThisWorkbook.Sheets("VentaTemporal")
+    If wsTemp Is Nothing Then
+        Set wsTemp = ThisWorkbook.Sheets.Add
+        wsTemp.Name = "VentaTemporal"
+        wsTemp.Visible = xlSheetVeryHidden
+    End If
+    On Error GoTo ErrorHandler
+
+    ' Limpiar hoja y copiar datos
+    wsTemp.Cells.Clear
+    Dim i As Integer
+    For i = 0 To Me.lstVenta.ListCount - 1
+        wsTemp.Cells(i + 1, 1).Value = Me.lstVenta.List(i, 0) ' Código
+        wsTemp.Cells(i + 1, 2).Value = Me.lstVenta.List(i, 1) ' Descripción
+        wsTemp.Cells(i + 1, 3).Value = Me.lstVenta.List(i, 2) ' Cantidad
+        wsTemp.Cells(i + 1, 4).Value = Me.lstVenta.List(i, 3) ' Subtotal
+    Next i
+
+    Exit Sub
+ErrorHandler:
+    MsgBox "Error al guardar la venta pendiente: " & Err.Description, vbCritical
+End Sub
+
+Sub RestaurarVentaTemporal()
+    On Error GoTo ErrorHandler
+
+    Dim wsTemp As Worksheet
+    Set wsTemp = ThisWorkbook.Sheets("VentaTemporal")
+
+    ' Limpiar carrito actual y restaurar
+    Me.lstVenta.Clear
+    Dim fila As Long
+    fila = 1
+    While wsTemp.Cells(fila, 1).Value <> ""
+        Me.lstVenta.AddItem
+        Dim i As Integer
+        i = Me.lstVenta.ListCount - 1
+        Me.lstVenta.List(i, 0) = wsTemp.Cells(fila, 1).Value
+        Me.lstVenta.List(i, 1) = wsTemp.Cells(fila, 2).Value
+        Me.lstVenta.List(i, 2) = wsTemp.Cells(fila, 3).Value
+        Me.lstVenta.List(i, 3) = wsTemp.Cells(fila, 4).Value
+        fila = fila + 1
+    Wend
+
+    ' Limpiar hoja temporal y recalcular total
+    wsTemp.Cells.Clear
+    Call CalcularTotal
+
+    Exit Sub
+ErrorHandler:
+    ' No hacer nada si hay error, simplemente se empieza una venta nueva
+End Sub
+' --- FIN: Lógica para guardar y restaurar ventas temporales ---
 
 ' ========== MEJORAS VISUALES DEL SISTEMA ==========
 Sub AplicarTemaVisual()

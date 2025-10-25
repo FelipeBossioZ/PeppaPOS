@@ -128,10 +128,10 @@ def migrate_data():
         df_compras = pd.read_excel(EXCEL_FILE, sheet_name=SHEET_COMPRAS)
 
         # Columnas originales: "Fecha", "Hora", "No.Compra", "Proveedor", "Código", "Producto", "Cantidad", ...
-        df_compras = df_compras.iloc[:, :15] # Tomar solo las columnas relevantes
+        df_compras = df_compras.iloc[:, :16] # Tomar solo las columnas relevantes (ahora 16 con IVA)
         df_compras.columns = [
             'fecha', 'hora', 'num_compra', 'proveedor', 'codigo_producto', 'nombre_producto',
-            'cantidad', 'precio_unitario', 'subtotal', 'lote', 'descuento_porc',
+            'cantidad', 'precio_unitario', 'subtotal', 'valor_iva', 'lote', 'descuento_porc',
             'total_con_desc', 'unidad', 'precio_venta', 'ultimo_costo'
         ]
         df_compras.dropna(subset=['num_compra'], inplace=True)
@@ -147,6 +147,7 @@ def migrate_data():
             cantidad INTEGER,
             precio_unitario REAL,
             subtotal REAL,
+            valor_iva REAL,
             lote TEXT,
             descuento_porc REAL,
             total_con_desc REAL
@@ -156,7 +157,7 @@ def migrate_data():
         # Seleccionar solo las columnas que coinciden con la tabla
         df_compras_final = df_compras[[
             'fecha', 'hora', 'num_compra', 'proveedor', 'codigo_producto',
-            'cantidad', 'precio_unitario', 'subtotal', 'lote', 'descuento_porc', 'total_con_desc'
+            'cantidad', 'precio_unitario', 'subtotal', 'valor_iva', 'lote', 'descuento_porc', 'total_con_desc'
         ]]
 
         df_compras_final.to_sql('compras', conn, if_exists='append', index=False)
