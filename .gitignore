@@ -1,0 +1,17 @@
+﻿# Excel / Office
+*.xls*
+~$*
+*.tmp
+*.bak
+*.ldb
+*.laccdb
+# VBA cache
+*.exd
+# SO / editor
+.DS_Store
+Thumbs.db
+.vscode/
+!MetroPharma_POS_V.3.xlsm
+!*.bas
+!*.frm
+!*.cls

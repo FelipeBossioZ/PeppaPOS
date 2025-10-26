@@ -1,0 +1,1807 @@
+'---MODULO AUDITORIA
+
+' ==================================================
+' MÓDULO PARA GESTIÓN DE AUDITORÍA
+' ==================================================
+
+Sub DesprotegerHojaAuditoria()
+    Dim contraseña As String
+    Dim wsAudit As Worksheet
+    
+    ' Verificar si existe la hoja
+    On Error Resume Next
+    Set wsAudit = ThisWorkbook.Sheets("Auditoria_Ajustes")
+    On Error GoTo 0
+    
+    If wsAudit Is Nothing Then
+        MsgBox "No existe la hoja de Auditoría", vbExclamation
+        Exit Sub
+    End If
+    
+    ' Solicitar contraseña
+    contraseña = InputBox("Ingrese la contraseña para desproteger la hoja:", "Seguridad")
+    
+    If contraseña = "delta85123" Then
+        wsAudit.Unprotect password:="delta85123"
+        MsgBox "Hoja desprotegida exitosamente" & vbCrLf & _
+               "RECUERDE volver a protegerla cuando termine", vbInformation
+    ElseIf contraseña = "" Then
+        ' Usuario canceló
+        Exit Sub
+    Else
+        MsgBox "Contraseña incorrecta", vbCritical, "Acceso Denegado"
+    End If
+End Sub
+
+Sub ProtegerHojaAuditoria()
+    Dim wsAudit As Worksheet
+    
+    On Error Resume Next
+    Set wsAudit = ThisWorkbook.Sheets("Auditoria_Ajustes")
+    On Error GoTo 0
+    
+    If wsAudit Is Nothing Then
+        MsgBox "No existe la hoja de Auditoría", vbExclamation
+        Exit Sub
+    End If
+    
+    wsAudit.Protect password:="delta85123", _
+                   DrawingObjects:=True, _
+                   Contents:=True, _
+                   Scenarios:=True, _
+                   AllowSorting:=True, _
+                   AllowFiltering:=True
+                   
+    MsgBox "Hoja protegida exitosamente", vbInformation
+End Sub
+
+
+Sub PonerContraseñaAuditor()
+'
+' PonerContraseñaAuditor Macro
+'
+
+'
+    Sheets("Auditoria_Ajustes").Select
+    ActiveSheet.Protect DrawingObjects:=True, Contents:=True, Scenarios:=True
+End Sub
+
+
+
+Public Sub CerrarYGuardar()
+    Dim respuesta As Integer
+    
+    respuesta = MsgBox("¿Desea guardar los cambios y cerrar el sistema?", _
+                      vbYesNoCancel + vbQuestion, "Cerrar Sistema POS")
+    
+    Select Case respuesta
+        Case vbYes
+            ' Crear backup antes de cerrar
+            On Error Resume Next
+            Dim rutaBackup As String
+            rutaBackup = "C:\Users\" & Environ("USERNAME") & "\Desktop\BackUpAlFinal\"
+            
+            If Dir(rutaBackup, vbDirectory) <> "" Then
+                ThisWorkbook.SaveCopyAs rutaBackup & "BackupCierre_" & Format(Now, "ddmmyyyy_HHmmss") & ".xlsm"
+            End If
+            
+            ' Guardar y cerrar
+            ThisWorkbook.Save
+            Application.Quit
+            
+        Case vbNo
+            ' Cerrar sin guardar
+            ThisWorkbook.Saved = True
+            Application.Quit
+            
+        Case vbCancel
+            ' No hacer nada
+    End Select
+End Sub
+
+
+'----- MODULO CAMBIAR USUARIOS
+
+Sub CambiarVendedorAConsuelo()
+    On Error Resume Next
+    
+    Dim ws As Worksheet
+    Set ws = ThisWorkbook.Sheets("Usuarios")
+    ws.Visible = xlSheetVisible
+    ws.Unprotect "pos123"
+    
+    ' Buscar y cambiar el usuario vendedor
+    Dim fila As Long
+    For fila = 2 To ws.Cells(ws.Rows.Count, "A").End(xlUp).Row
+        If ws.Cells(fila, 2).Value = "vendedor" Then
+            ws.Cells(fila, 2).Value = "CONSUELO"
+            ws.Cells(fila, 3).Value = "ABC123" ' Mantener la misma contraseña
+            Exit For
+        End If
+    Next fila
+    
+    ws.Visible = xlSheetVeryHidden
+    MsgBox "Usuario cambiado: 'vendedor' ? 'CONSUELO'" & vbCrLf & _
+           "Contraseña: ABC123", vbInformation
+End Sub
+
+
+'----- MODULO EFECTOS VISUALES
+
+' Módulo: modEfectosLogin
+Sub RestaurarColoresLogin()
+    On Error Resume Next ' Esto evita el error si el formulario está cerrado
+    
+    ' Verificar si el formulario existe y está cargado
+    If Not frmLogin Is Nothing Then
+        If TypeOf frmLogin Is MSForms.UserForm Then
+            frmLogin.txtPassword.BackColor = RGB(255, 255, 255)
+            frmLogin.txtUsuario.BackColor = RGB(255, 255, 255)
+        End If
+    End If
+End Sub
+
+'----- MODULO FORMATEAR PRECIO
+
+Function FormatearPrecioTexto(valor As Double) As String
+    ' Formatear con separador de miles usando coma y sin decimales
+    Dim resultado As String
+    resultado = Format(valor, "#,##0")
+    ' Reemplazar coma por punto para separador de miles
+    resultado = Replace(resultado, ",", ".")
+    ' Agregar símbolo de peso
+    FormatearPrecioTexto = "$" & resultado
+End Function
+
+Sub AbrirPOS()
+    frmPOS.Show
+End Sub
+
+
+
+'----- MODULO InventoryGateway
+
+' ===== InventoryGateway.bas =====
+Option Explicit
+Private busy As Boolean
+
+' Punto ÚNICO para tocar inventario
+' - Idempotente por opId
+' - Desactiva eventos/calculo durante la escritura
+Public Function UpdateInventory(opId As String, sku As String, delta As Long, _
+                                Optional motivo As String = "", Optional referencia As String = "") As Boolean
+    If busy Then Exit Function ' evita reentrancia
+    busy = True
+    On Error GoTo CleanFail
+
+    Application.EnableEvents = False
+    Application.ScreenUpdating = False
+    Application.Calculation = xlCalculationManual
+
+    ' 1) ¿ya fue aplicada?
+    If WasOperationApplied(opId) Then
+        UpdateInventory = True
+        GoTo CleanExit
+    End If
+
+    ' 2) Registrar movimiento (ledger)
+    Call LogMovement(opId, sku, delta, motivo, referencia)
+
+    UpdateInventory = True
+
+CleanExit:
+    Application.EnableEvents = True
+    Application.ScreenUpdating = True
+    Application.Calculation = xlCalculationAutomatic
+    busy = False
+    Exit Function
+
+CleanFail:
+    UpdateInventory = False
+    Resume CleanExit
+End Function
+
+
+'----- MODULO Alta rápida
+
+'== mAltaRapida.bas ==
+Option Explicit
+
+' Ajusta estos nombres si tus columnas difieren:
+' A=código(1), B=nombre(2), D=costo(4), E=stock(5), F=pventa(6)
+Public Function AsegurarProducto( _
+    ByVal wsProd As Worksheet, _
+    ByVal codigo As String, _
+    ByVal nombre As String, _
+    ByVal costo As Variant, _
+    ByVal pVenta As Variant, _
+    ByVal stockInicial As Variant, _
+    Optional ByVal modoFijarStock As Boolean = True, _
+    Optional ByVal unidad As String = "", _
+    Optional ByVal proveedor As String = "" _
+) As Long
+    ' Devuelve la fila del producto en Hoja1 (creado o existente)
+    Dim r As Range, f As Long
+    If Len(Trim$(codigo)) = 0 Then Exit Function
+
+    Set r = wsProd.Columns(1).Find(What:=codigo, LookIn:=xlValues, LookAt:=xlWhole)
+    If r Is Nothing Then
+        ' Crear nuevo
+        f = wsProd.Cells(wsProd.Rows.Count, "A").End(xlUp).Row + 1
+        wsProd.Cells(f, 1).Value = codigo               ' Código
+        wsProd.Cells(f, 2).Value = IIf(Len(nombre) > 0, nombre, "SIN NOMBRE")
+        If Not IsMissing(costo) And Len(costo) > 0 Then wsProd.Cells(f, 4).Value = Val(costo)
+        If Not IsMissing(pVenta) And Len(pVenta) > 0 Then wsProd.Cells(f, 6).Value = Val(pVenta)
+        If Not IsMissing(stockInicial) And Len(stockInicial) > 0 Then
+            wsProd.Cells(f, 5).Value = Val(stockInicial)
+        Else
+            wsProd.Cells(f, 5).Value = 0
+        End If
+        ' (Opcional) si tienes columnas para Unidad/Proveedor, escríbelas aquí.
+        ' wsProd.Cells(f, 7).Value = unidad
+        ' wsProd.Cells(f, 8).Value = proveedor
+
+        wsProd.Cells(f, 15).Value = "Alta rápida: " & Format(Now, "dd/mm HH:nn")
+        wsProd.Cells(f, 16).Value = "Stock=" & wsProd.Cells(f, 5).Value
+    Else
+        ' Actualizar existente
+        f = r.Row
+        If Len(nombre) > 0 Then wsProd.Cells(f, 2).Value = nombre
+        If Len(costo) > 0 Then wsProd.Cells(f, 4).Value = Val(costo)
+        If Len(pVenta) > 0 Then wsProd.Cells(f, 6).Value = Val(pVenta)
+        If Len(stockInicial) > 0 Then
+            If modoFijarStock Then
+                wsProd.Cells(f, 5).Value = Val(stockInicial)
+            Else
+                wsProd.Cells(f, 5).Value = Val(wsProd.Cells(f, 5).Value) + Val(stockInicial)
+            End If
+        End If
+        wsProd.Cells(f, 15).Value = "Actualizado: " & Format(Now, "dd/mm HH:nn")
+        wsProd.Cells(f, 16).Value = "Stock=" & wsProd.Cells(f, 5).Value
+    End If
+
+    ' Refrescar cachés si existen
+    On Error Resume Next
+    If modCacheGlobal.CacheCargado Then
+        modCacheGlobal.ActualizarStock codigo, wsProd.Cells(f, 5).Value
+        If Len(pVenta) > 0 Then modCacheGlobal.ActualizarPrecio codigo, Val(pVenta)
+    End If
+    ' Refrescar POS si está abierto
+    Dim frm As Object
+    For Each frm In VBA.UserForms
+        If frm.Name = "frmPOS" Then frm.RefrescarCatalogo
+    Next frm
+    On Error GoTo 0
+
+    AsegurarProducto = f
+End Function
+
+
+'--------MODULO APLICAR MOVIMIENTOS
+
+
+
+Option Explicit
+
+' ==== CONFIGURA NOMBRES DE HOJAS AQUÍ ====
+Private Const SH_PRODUCTOS As String = "Hoja1"     ' Inventario
+Private Const SH_VENTAS    As String = "Ventas"
+Private Const SH_COMPRAS   As String = "Compras"
+
+' ==== MAPEOS DE COLUMNAS (según tu libro actual) ====
+' Hoja de VENTAS:
+' A=Fecha, B=Hora, C=Nro, D=Cliente, E=Codigo, F=Descripcion,
+' G=PrecioUnit, H=Cantidad, I=Subtotal, J=Estado ("ANULADA" o "ACTIVA")
+Private Const V_COL_COD   As Long = 5
+Private Const V_COL_CANT  As Long = 8
+Private Const V_COL_EST   As Long = 10
+
+' Hoja de COMPRAS:
+' A=Fecha, B=Hora, C=Nro, D=Proveedor, E=Codigo, F=Producto,
+' G=Cantidad, H=Costo, I=Subtotal, J=Lote, K=Desc%, L=TotalDesc,
+' M=Unidad, N=P.Venta, O=UltCosto, P=NumFactura
+Private Const C_COL_COD   As Long = 5
+Private Const C_COL_CANT  As Long = 7
+Private Const C_COL_COSTO As Long = 8
+Private Const C_COL_PV    As Long = 14
+
+' Hoja1 (Inventario): A=Codigo, B=Nombre, C=Unidad, D=Costo, E=Stock, F=P.Venta
+Private Const P_COL_COD   As Long = 1
+Private Const P_COL_NOM   As Long = 2
+Private Const P_COL_UNI   As Long = 3
+Private Const P_COL_COSTO As Long = 4
+Private Const P_COL_STOCK As Long = 5
+Private Const P_COL_PV    As Long = 6
+Private Const P_COL_LOG1  As Long = 13
+Private Const P_COL_LOG2  As Long = 14
+Private Const P_COL_LOG3  As Long = 15
+Private Const P_COL_LOG4  As Long = 16
+
+' Columna de marca "APLICADO" (usa una libre a la derecha)
+Private Const V_COL_APLIC As Long = 20   ' Ventas -> columna T
+Private Const C_COL_APLIC As Long = 20   ' Compras -> columna T
+
+' ===== ENTRADAS RÁPIDAS =====
+Public Sub AplicarMovimientosDeHoy()
+    AplicarCompras Date
+    AplicarVentas Date
+    RefrescarPOS
+    MsgBox "Movimientos de HOY aplicados a Hoja1.", vbInformation
+End Sub
+
+Public Sub AplicarMovimientos_Todo()
+    AplicarCompras 0        ' 0 = sin filtro de fecha
+    AplicarVentas 0
+    RefrescarPOS
+    MsgBox "Todos los movimientos NO aplicados han sido traspasados a Hoja1.", vbInformation
+End Sub
+
+' ===== NÚCLEO: COMPRAS =====
+Private Sub AplicarCompras(ByVal soloFecha As Date)
+    Dim wsP As Worksheet, wsC As Worksheet
+    Set wsP = ThisWorkbook.Worksheets(SH_PRODUCTOS)
+    Set wsC = ThisWorkbook.Worksheets(SH_COMPRAS)
+
+    Dim u As Long, r As Long
+    u = wsC.Cells(wsC.Rows.Count, "A").End(xlUp).Row
+    If u < 2 Then Exit Sub
+
+    For r = 2 To u
+        ' Filtrar por fecha si se pidió
+        If soloFecha <> 0 Then
+            If CLng(wsC.Cells(r, 1).Value) <> CLng(soloFecha) Then GoTo siguienteC
+        End If
+
+        ' Ya aplicado
+        If UCase$(Trim$(wsC.Cells(r, C_COL_APLIC).Value)) Like "APLICADO*" Then GoTo siguienteC
+
+        Dim cod$, nom$, uni$, cst#, pv#, cant#
+        cod = CStr(wsC.Cells(r, C_COL_COD).Value)
+        If Len(Trim$(cod)) = 0 Then GoTo siguienteC
+
+        nom = CStr(wsC.Cells(r, 6).Value)              ' Nombre producto en compras
+        uni = CStr(wsC.Cells(r, 13).Value)             ' Unidad (si existe)
+        cst = Val(wsC.Cells(r, C_COL_COSTO).Value)     ' Costo
+        pv = Val(wsC.Cells(r, C_COL_PV).Value)         ' Precio venta
+        cant = Val(wsC.Cells(r, C_COL_CANT).Value)     ' Cantidad
+
+        ' Encontrar o crear en Hoja1
+        Dim fr As Long: fr = FilaProducto(wsP, cod)
+        If fr = 0 Then
+            fr = wsP.Cells(wsP.Rows.Count, P_COL_COD).End(xlUp).Row + 1
+            ' Código como TEXTO para no perder dígitos largos
+            wsP.Cells(fr, P_COL_COD).NumberFormat = "@"
+            wsP.Cells(fr, P_COL_COD).Value = "'" & cod
+            wsP.Cells(fr, P_COL_NOM).Value = IIf(Len(nom) = 0, "SIN NOMBRE", nom)
+            wsP.Cells(fr, P_COL_UNI).Value = IIf(Len(uni) = 0, "UND", uni)
+            wsP.Cells(fr, P_COL_COSTO).Value = cst
+            wsP.Cells(fr, P_COL_STOCK).Value = 0
+            wsP.Cells(fr, P_COL_PV).Value = pv
+        End If
+
+        ' Sumar stock + actualizar costo / pv (si >0)
+        With wsP
+            .Cells(fr, P_COL_STOCK).Value = Val(.Cells(fr, P_COL_STOCK).Value) + cant
+            If cst > 0 Then .Cells(fr, P_COL_COSTO).Value = cst
+            If pv > 0 Then .Cells(fr, P_COL_PV).Value = pv
+            .Cells(fr, P_COL_LOG3).Value = "Compra aplicada: " & Format(Now, "dd/mm HH:nn")
+            .Cells(fr, P_COL_LOG4).Value = "+" & CStr(cant) & " (Stock=" & .Cells(fr, P_COL_STOCK).Value & ")"
+        End With
+
+        ' Marcar fila como aplicada
+        wsC.Cells(r, C_COL_APLIC).Value = "APLICADO " & Format(Now, "dd/mm HH:nn")
+
+siguienteC:
+    Next r
+End Sub
+
+' ===== NÚCLEO: VENTAS =====
+Private Sub AplicarVentas(ByVal soloFecha As Date)
+    Dim wsP As Worksheet, wsV As Worksheet
+    Set wsP = ThisWorkbook.Worksheets(SH_PRODUCTOS)
+    Set wsV = ThisWorkbook.Worksheets(SH_VENTAS)
+
+    Dim u As Long, r As Long
+    u = wsV.Cells(wsV.Rows.Count, "A").End(xlUp).Row
+    If u < 2 Then Exit Sub
+
+    For r = 2 To u
+        ' Filtrar por fecha si se pidió
+        If soloFecha <> 0 Then
+            If CLng(wsV.Cells(r, 1).Value) <> CLng(soloFecha) Then GoTo siguienteV
+        End If
+
+        ' Ya aplicado
+        If UCase$(Trim$(wsV.Cells(r, V_COL_APLIC).Value)) Like "APLICADO*" Then GoTo siguienteV
+
+        ' Saltar ANULADAS
+        If UCase$(Trim$(wsV.Cells(r, V_COL_EST).Value)) = "ANULADA" Then GoTo siguienteV
+
+        Dim cod$, cant#
+        cod = CStr(wsV.Cells(r, V_COL_COD).Value)
+        If Len(Trim$(cod)) = 0 Then GoTo siguienteV
+
+        cant = Val(wsV.Cells(r, V_COL_CANT).Value)
+
+        ' Encontrar o crear
+        Dim fr As Long: fr = FilaProducto(wsP, cod)
+        If fr = 0 Then
+            fr = wsP.Cells(wsP.Rows.Count, P_COL_COD).End(xlUp).Row + 1
+            wsP.Cells(fr, P_COL_COD).NumberFormat = "@"
+            wsP.Cells(fr, P_COL_COD).Value = "'" & cod
+            wsP.Cells(fr, P_COL_NOM).Value = "SIN NOMBRE"
+            wsP.Cells(fr, P_COL_UNI).Value = "UND"
+            wsP.Cells(fr, P_COL_COSTO).Value = 0
+            wsP.Cells(fr, P_COL_STOCK).Value = 0
+            wsP.Cells(fr, P_COL_PV).Value = 0
+        End If
+
+        ' Restar stock (no forzamos mínimo 0 por si quieres ver negativos)
+        With wsP
+            .Cells(fr, P_COL_STOCK).Value = Val(.Cells(fr, P_COL_STOCK).Value) - cant
+            .Cells(fr, P_COL_LOG1).Value = "Venta aplicada: " & Format(Now, "dd/mm HH:nn")
+            .Cells(fr, P_COL_LOG2).Value = "-" & CStr(cant) & " (Stock=" & .Cells(fr, P_COL_STOCK).Value & ")"
+        End With
+
+        wsV.Cells(r, V_COL_APLIC).Value = "APLICADO " & Format(Now, "dd/mm HH:nn")
+
+siguienteV:
+    Next r
+End Sub
+
+' ===== UTIL =====
+Private Function FilaProducto(wsP As Worksheet, ByVal codigo As String) As Long
+    ' Busca por TEXTO exacto en columna A sin perder dígitos largos
+    Dim r As Range
+    Set r = wsP.Columns(P_COL_COD).Find(What:=codigo, LookIn:=xlValues, LookAt:=xlWhole)
+    If Not r Is Nothing Then FilaProducto = r.Row Else FilaProducto = 0
+End Function
+
+Private Sub RefrescarPOS()
+    On Error Resume Next
+    Dim f As Object
+    For Each f In VBA.UserForms
+        If f.Name = "frmPOS" Then f.RefrescarCatalogo
+    Next f
+End Sub
+
+
+
+'------ MODULO CACHE GLOBAL
+
+' ============================================================
+' CACHE GLOBAL - HACE TODO EL SISTEMA 10X MÁS RÁPIDO
+' ============================================================
+Option Explicit
+
+' Cache compartido por TODOS los formularios
+Public CacheGlobal As Object
+Public CacheVentas As Object
+Public CacheCargado As Boolean
+Public FechaCache As Date
+
+' ============================================================
+' INICIALIZAR UNA SOLA VEZ AL ABRIR EL SISTEMA
+' ============================================================
+Public Sub InicializarSistemaRapido()
+    On Error GoTo ErrorHandler
+    
+    Application.StatusBar = "Cargando sistema..."
+    Application.ScreenUpdating = False
+    
+    ' Crear los diccionarios
+    Set CacheGlobal = CreateObject("Scripting.Dictionary")
+    Set CacheVentas = CreateObject("Scripting.Dictionary")
+    
+    ' Cargar productos
+    Call CargarProductosAlCache
+    
+    ' Cargar ventas del día
+    Call CargarVentasDelDia
+    
+    CacheCargado = True
+    FechaCache = Now
+    
+    Application.ScreenUpdating = True
+    Application.StatusBar = "Sistema listo - " & CacheGlobal.Count & " productos en memoria"
+    
+    ' Limpiar status después de 2 segundos
+    Application.OnTime Now + TimeValue("00:00:02"), "LimpiarStatus"
+    
+    Exit Sub
+ErrorHandler:
+    Application.ScreenUpdating = True
+    MsgBox "Error inicializando: " & Err.Description
+End Sub
+
+' ============================================================
+' CARGAR PRODUCTOS (Una sola vez)
+' ============================================================
+Private Sub CargarProductosAlCache()
+    Dim ws As Worksheet
+    Set ws = ThisWorkbook.Sheets("Hoja1")
+    
+    Dim ultimaFila As Long
+    ultimaFila = ws.Cells(ws.Rows.Count, "A").End(xlUp).Row
+    
+    If ultimaFila < 3 Then Exit Sub
+    
+    ' Cargar TODO de una vez
+    Dim datos As Variant
+    datos = ws.Range("A3:P" & ultimaFila).Value
+    
+    Dim i As Long
+    For i = 1 To UBound(datos, 1)
+        If datos(i, 1) <> "" Then ' Si tiene código
+            Dim info(0 To 7) As Variant
+            info(0) = datos(i, 2)  ' Descripción
+            info(1) = IIf(IsNumeric(datos(i, 6)), datos(i, 6), 0) ' Precio venta
+            info(2) = IIf(IsNumeric(datos(i, 5)), datos(i, 5), 0) ' Stock
+            info(3) = IIf(IsNumeric(datos(i, 4)), datos(i, 4), 0) ' Costo
+            info(4) = datos(i, 3)  ' Unidad
+            info(5) = i + 2        ' Fila en Excel
+            info(6) = False        ' Modificado
+            info(7) = datos(i, 1)  ' Código
+            
+            CacheGlobal.Add CStr(datos(i, 1)), info
+        End If
+    Next i
+End Sub
+
+' ============================================================
+' CARGAR VENTAS DEL DÍA
+' ============================================================
+Private Sub CargarVentasDelDia()
+    Dim ws As Worksheet
+    Set ws = ThisWorkbook.Sheets("Ventas")
+    
+    Dim ultimaFila As Long
+    ultimaFila = ws.Cells(ws.Rows.Count, "A").End(xlUp).Row
+    
+    If ultimaFila < 2 Then Exit Sub
+    
+    ' Solo cargar ventas de HOY
+    Dim fila As Long
+    For fila = ultimaFila To 2 Step -1 ' Empezar desde el final (más rápido)
+        If ws.Cells(fila, 1).Value = Date Then
+            ' Guardar venta en cache
+            Dim numVenta As String
+            numVenta = CStr(ws.Cells(fila, 3).Value)
+            
+            If Not CacheVentas.Exists(numVenta) Then
+                CacheVentas.Add numVenta, True
+            End If
+        Else
+            ' Si ya no es de hoy, parar
+            If ws.Cells(fila, 1).Value < Date Then Exit For
+        End If
+    Next fila
+End Sub
+
+' ============================================================
+' BUSCAR PRODUCTOS ULTRA RÁPIDO
+' ============================================================
+Public Function BuscarRapido(texto As String) As Collection
+    Set BuscarRapido = New Collection
+    
+    If Not CacheCargado Then Call InicializarSistemaRapido
+    
+    Dim buscar As String
+    buscar = UCase(texto)
+    
+    Dim key As Variant
+    For Each key In CacheGlobal.Keys
+        Dim info As Variant
+        info = CacheGlobal(key)
+        
+        If InStr(1, UCase(key), buscar) > 0 Or _
+           InStr(1, UCase(info(0)), buscar) > 0 Then
+            BuscarRapido.Add Array(key, info(0), info(1), info(2))
+            
+            If BuscarRapido.Count >= 50 Then Exit For
+        End If
+    Next key
+End Function
+
+' ============================================================
+' OBTENER PRODUCTO
+' ============================================================
+Public Function ObtenerProducto(codigo As String) As Variant
+    If CacheGlobal.Exists(codigo) Then
+        ObtenerProducto = CacheGlobal(codigo)
+    Else
+        ObtenerProducto = Null
+    End If
+End Function
+
+' ============================================================
+' ACTUALIZAR STOCK
+' ============================================================
+Public Sub ActualizarStock(codigo As String, nuevoStock As Long)
+    If CacheGlobal.Exists(codigo) Then
+        Dim info As Variant
+        info = CacheGlobal(codigo)
+        info(2) = nuevoStock
+        info(6) = True ' Marcar como modificado
+        CacheGlobal(codigo) = info
+        
+        ' Actualizar en Excel también
+        Dim fila As Long
+        fila = info(5)
+        ThisWorkbook.Sheets("Hoja1").Cells(fila, 5).Value = nuevoStock
+    End If
+End Sub
+
+' ============================================================
+' ACTUALIZAR PRECIO
+' ============================================================
+Public Sub ActualizarPrecio(codigo As String, nuevoPrecio As Double)
+    If CacheGlobal.Exists(codigo) Then
+        Dim info As Variant
+        info = CacheGlobal(codigo)
+        info(1) = nuevoPrecio
+        info(6) = True
+        CacheGlobal(codigo) = info
+        
+        ' Actualizar en Excel
+        Dim fila As Long
+        fila = info(5)
+        ThisWorkbook.Sheets("Hoja1").Cells(fila, 6).Value = nuevoPrecio
+    End If
+End Sub
+
+' ============================================================
+' REFRESCAR CACHE (Si se necesita)
+' ============================================================
+Public Sub RefrescarCache()
+    CacheCargado = False
+    Call InicializarSistemaRapido
+End Sub
+
+' ============================================================
+' UTILIDADES
+' ============================================================
+Public Sub LimpiarStatus()
+    Application.StatusBar = ""
+End Sub
+
+Public Function TotalVentasHoy() As Double
+    TotalVentasHoy = CacheVentas.Count
+End Function
+
+
+
+
+' ==================================================
+' MÓDULO: modHelpers
+'
+' ==================================================
+
+Option Explicit
+
+' ==================================================
+' FUNCIONES PARA SELECCIONAR TEXTO EN COMPRAS
+' ==================================================
+Public Sub SeleccionarCantidad()
+    On Error Resume Next
+    With frmCompras.txtCantidad
+        .SelStart = 0
+        .SelLength = Len(.Text)
+    End With
+End Sub
+
+Public Sub SeleccionarDescuento()
+    On Error Resume Next
+    With frmCompras.txtDescuento
+        .SelStart = 0
+        .SelLength = Len(.Text)
+    End With
+End Sub
+
+Public Sub SeleccionarPrecioUnitario()
+    On Error Resume Next
+    With frmCompras.txtPrecioUnitario
+        .SelStart = 0
+        .SelLength = Len(.Text)
+    End With
+End Sub
+
+Public Sub SeleccionarPrecioVenta()
+    On Error Resume Next
+    With frmCompras.txtPrecioVenta
+        .SelStart = 0
+        .SelLength = Len(.Text)
+    End With
+End Sub
+
+
+
+' ==================================================
+' MÓDULO: ModInventario
+'
+' ==================================================
+
+Sub CrearHojaInventarioFisico()
+    ' Crear hoja temporal para inventario
+    Dim wsInventario As Worksheet
+    Set wsInventario = ThisWorkbook.Sheets.Add
+    wsInventario.Name = "InventarioFisico_" & Format(Date, "ddmmyy")
+    
+    ' Encabezados con formato
+    wsInventario.Range("A1").Value = "Código"
+    wsInventario.Range("B1").Value = "Producto"
+    wsInventario.Range("C1").Value = "Stock Sistema"
+    wsInventario.Range("D1").Value = "Stock Real"
+    wsInventario.Range("E1").Value = "Diferencia"
+    wsInventario.Range("F1").Value = "Verificado"
+    wsInventario.Range("A1:F1").Font.Bold = True
+    wsInventario.Range("A1:F1").Interior.Color = RGB(200, 200, 200)
+    
+    ' Copiar todos los productos de Hoja1
+    Dim wsProductos As Worksheet
+    Set wsProductos = ThisWorkbook.Sheets("Hoja1")
+    
+    Dim fila As Long
+    Dim filaDestino As Long
+    filaDestino = 2
+    
+    For fila = 3 To wsProductos.Cells(wsProductos.Rows.Count, "A").End(xlUp).Row
+        wsInventario.Cells(filaDestino, 1).Value = wsProductos.Cells(fila, 1).Value ' Código
+        wsInventario.Cells(filaDestino, 2).Value = wsProductos.Cells(fila, 2).Value ' Nombre
+        wsInventario.Cells(filaDestino, 3).Value = wsProductos.Cells(fila, 5).Value ' Stock actual
+        wsInventario.Cells(filaDestino, 4).Value = 0 ' Stock real (para llenar)
+        wsInventario.Cells(filaDestino, 5).Formula = "=D" & filaDestino & "-C" & filaDestino ' Diferencia
+        wsInventario.Cells(filaDestino, 6).Value = "NO" ' Verificado
+        filaDestino = filaDestino + 1
+    Next fila
+    
+    ' Ajustar columnas
+    wsInventario.Columns("A:F").AutoFit
+    
+    MsgBox "Hoja de inventario creada: " & wsInventario.Name, vbInformation
+End Sub
+
+
+' ==================================================
+' MÓDULO: modMigracionLite
+'
+' ==================================================
+
+Option Explicit
+
+' === Configura aquí los nombres de hojas en AMBOS archivos ===
+Private Const SH_VENTAS As String = "Ventas"
+Private Const SH_COMPRAS As String = "Compras"
+' Hoja1 (inventario) NO se toca
+
+' === Punto de entrada (solo HOY) ===
+Public Sub ImportarVentasYComprasDeHoy()
+    ImportarVentasCompras True
+End Sub
+
+' === Punto de entrada (todo histórico) ===
+Public Sub ImportarVentasYCompras_Todo()
+    ImportarVentasCompras False
+End Sub
+
+' --- núcleo ---
+Private Sub ImportarVentasCompras(ByVal soloHoy As Boolean)
+    Dim ruta As Variant, wbSrc As Workbook, wbDst As Workbook
+    ruta = Application.GetOpenFilename("Excel (*.xlsm;*.xlsx),*.xlsm;*.xlsx", , _
+            "Elige el archivo DONDE TRABAJÓ DOÑA A")
+    If ruta = False Then Exit Sub
+
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    Application.Calculation = xlCalculationManual
+
+    Set wbDst = ThisWorkbook
+    Set wbSrc = Workbooks.Open(CStr(ruta), ReadOnly:=True)
+
+    ' 1) Importar VENTAS (append)
+    AppendFilas wbSrc, SH_VENTAS, wbDst, SH_VENTAS, soloHoy
+
+    ' 2) Importar COMPRAS (append)
+    AppendFilas wbSrc, SH_COMPRAS, wbDst, SH_COMPRAS, soloHoy
+
+    wbSrc.Close SaveChanges:=False
+
+    ' 3) Recalcular correlativos
+    RecalcularNumeros wbDst
+
+    ' 4) Refrescar POS si está abierto
+    On Error Resume Next
+    Dim f As Object
+    For Each f In VBA.UserForms
+        If f.Name = "frmPOS" Then f.RefrescarCatalogo
+    Next f
+    On Error GoTo 0
+
+    Application.Calculation = xlCalculationAutomatic
+    Application.EnableEvents = True
+    Application.ScreenUpdating = True
+
+    MsgBox "Importación completada (" & IIf(soloHoy, "hoy", "todo") & ").", vbInformation
+End Sub
+
+' --- Copia filas de src->dst (append). Si soloHoy=True, solo fecha=Date (col A) ---
+Private Sub AppendFilas(wbSrc As Workbook, shSrc As String, _
+                        wbDst As Workbook, shDst As String, _
+                        ByVal soloHoy As Boolean)
+    On Error GoTo fin
+
+    Dim wsS As Worksheet, wsD As Worksheet
+    Set wsS = wbSrc.Worksheets(shSrc)
+    Set wsD = wbDst.Worksheets(shDst)
+
+    Dim uS As Long, uD As Long, r As Long, copiadas As Long
+    uS = wsS.Cells(wsS.Rows.Count, "A").End(xlUp).Row
+    If uS < 2 Then Exit Sub
+
+    ' construir un índice para evitar duplicados por (Fecha, Nº)
+    Dim dict As Object: Set dict = CreateObject("Scripting.Dictionary")
+    Dim k As String
+
+    ' cargar claves existentes en destino
+    uD = wsD.Cells(wsD.Rows.Count, "A").End(xlUp).Row
+    Dim i As Long
+    For i = 2 To uD
+        k = CStr(wsD.Cells(i, 1).Value) & "|" & CStr(wsD.Cells(i, 3).Value) ' Fecha|Numero
+        If Not dict.Exists(k) Then dict.Add k, 1
+    Next i
+
+    ' recorrer origen y appendar solo faltantes
+    For r = 2 To uS
+        If (Not soloHoy) Or (CLng(wsS.Cells(r, 1).Value) = CLng(Date)) Then
+            k = CStr(wsS.Cells(r, 1).Value) & "|" & CStr(wsS.Cells(r, 3).Value)
+            If Not dict.Exists(k) Then
+                uD = uD + 1
+                wsD.Rows(uD).Value = wsS.Rows(r).Value
+                dict.Add k, 1
+                copiadas = copiadas + 1
+            End If
+        End If
+    Next r
+
+    ' formato mínimo (opcional)
+    wsD.Columns.AutoFit
+
+fin:
+    ' puedes hacer MsgBox si quieres: copiadas & " filas añadidas a " & shDst
+End Sub
+
+' --- ajusta numeroVenta / numeroCompra según el último en cada hoja ---
+Private Sub RecalcularNumeros(wb As Workbook)
+    On Error Resume Next
+    Dim wsV As Worksheet, wsC As Worksheet
+    Set wsV = wb.Worksheets(SH_VENTAS)
+    Set wsC = wb.Worksheets(SH_COMPRAS)
+
+    Dim ultimoV As Long, ultimoC As Long
+    ultimoV = UltimoNumero(wsV)    ' col C
+    ultimoC = UltimoNumero(wsC)    ' col C
+
+    ' Si el frmPOS usa variable pública numeroVenta/numeroCompra, puedes setearlas:
+    Dim f As Object
+    For Each f In VBA.UserForms
+        If f.Name = "frmPOS" Then
+            On Error Resume Next
+            f.numeroVenta = IIf(ultimoV > 0, ultimoV + 1, 1)
+            On Error GoTo 0
+        End If
+        If f.Name = "frmCompras" Then
+            On Error Resume Next
+            f.numeroCompra = IIf(ultimoC > 0, ultimoC + 1, 1)
+            On Error GoTo 0
+        End If
+    Next f
+End Sub
+
+Private Function UltimoNumero(ws As Worksheet) As Long
+    Dim u As Long, i As Long, m As Long
+    u = ws.Cells(ws.Rows.Count, "C").End(xlUp).Row
+    For i = 2 To u
+        If Val(ws.Cells(i, 3).Value) > m Then m = Val(ws.Cells(i, 3).Value)
+    Next i
+    UltimoNumero = m
+End Function
+
+ ==================================================
+' MÓDULO: modSeguridad
+'
+' ==================================================
+
+' Módulo: modSeguridad
+Option Explicit
+
+' Función simple de encriptación (puedes hacerla más compleja)
+Public Function Encriptar(texto As String) As String
+    Dim i As Integer
+    Dim resultado As String
+    resultado = ""
+    
+    For i = 1 To Len(texto)
+        resultado = resultado & Chr(Asc(Mid(texto, i, 1)) + 5) ' Desplazamiento de 5
+    Next i
+    
+    Encriptar = resultado
+End Function
+
+Public Function Desencriptar(textoEncriptado As String) As String
+    Dim i As Integer
+    Dim resultado As String
+    resultado = ""
+    
+    For i = 1 To Len(textoEncriptado)
+        resultado = resultado & Chr(Asc(Mid(textoEncriptado, i, 1)) - 5) ' Desplazamiento inverso
+    Next i
+    
+    Desencriptar = resultado
+End Function
+
+
+Option Explicit
+Private Const PWD As String = "TuClaveFuerte123"  ' cámbiala
+
+Public Sub ProtegerTodo(Optional ByVal silencioso As Boolean = False)
+    Dim sh As Worksheet
+    ' Protege la estructura del libro (oculta mover/insertar/eliminar hojas)
+    On Error Resume Next
+    ThisWorkbook.Protect password:=PWD, Structure:=True, Windows:=False
+    On Error GoTo 0
+
+    For Each sh In ThisWorkbook.Worksheets
+        On Error Resume Next
+        sh.EnableSelection = xlNoSelection ' o xlUnlockedCells si prefieres
+        sh.Protect password:=PWD, _
+            UserInterfaceOnly:=True, _
+            AllowFiltering:=True, _
+            AllowSorting:=True, _
+            AllowFormattingCells:=True, _
+            AllowFormattingColumns:=True, _
+            AllowFormattingRows:=True
+        On Error GoTo 0
+    Next sh
+
+    If Not silencioso Then MsgBox "Hojas protegidas (UIOnly).", vbInformation
+End Sub
+
+Public Sub DesprotegerTodo(Optional ByVal silencioso As Boolean = False)
+    Dim sh As Worksheet
+    On Error Resume Next
+    ThisWorkbook.Unprotect password:=PWD
+    For Each sh In ThisWorkbook.Worksheets
+        sh.Unprotect password:=PWD
+    Next sh
+    On Error GoTo 0
+    If Not silencioso Then MsgBox "Hojas desprotegidas.", vbInformation
+End Sub
+
+
+ ==================================================
+' MÓDULO: modSincronizacion
+'
+' ==================================================
+
+' ==================================================
+' MÓDULO DE SINCRONIZACIÓN ENTRE FORMULARIOS
+' Actualiza todos los formularios abiertos
+' ==================================================
+
+Option Explicit
+
+Public Sub RefrescarTodosLosFormularios()
+    On Error Resume Next
+    
+    Dim frm As Object
+    Dim actualizados As Integer
+    actualizados = 0
+    
+    ' Recorrer todos los UserForms abiertos
+    For Each frm In VBA.UserForms
+        Select Case frm.Name
+            Case "frmPOS"
+                ' CAMBIO: Usar RefrescarCatalogo
+                frm.RefrescarCatalogo
+                actualizados = actualizados + 1
+                
+            Case "frmCompras"
+                ' Si el método existe
+                frm.ActualizarLista
+                actualizados = actualizados + 1
+                
+            Case "frmAjusteInventario"
+                ' Si existe este formulario
+                frm.CargarProductosEnCache
+                actualizados = actualizados + 1
+        End Select
+    Next frm
+    
+    ' Mensaje opcional en la barra de estado
+    If actualizados > 0 Then
+        Application.StatusBar = "? " & actualizados & " formularios actualizados"
+        ' Limpiar después de 2 segundos
+        Application.OnTime Now + TimeValue("00:00:02"), "LimpiarStatusBar"
+    End If
+End Sub
+
+' Función específica para actualizar solo frmPOS
+Public Sub RefrescarPOS()
+    On Error Resume Next
+    
+    Dim frm As Object
+    
+    ' Buscar si frmPOS está abierto
+    For Each frm In VBA.UserForms
+        If frm.Name = "frmPOS" Then
+            ' CAMBIO: Usar RefrescarCatalogo en lugar de CargarProductos
+            frm.RefrescarCatalogo
+            Application.StatusBar = "? POS actualizado"
+            Exit For
+        End If
+    Next frm
+End Sub
+
+' Función para verificar si un formulario está abierto
+Public Function FormularioAbierto(nombreForm As String) As Boolean
+    On Error Resume Next
+    
+    Dim frm As Object
+    FormularioAbierto = False
+    
+    For Each frm In VBA.UserForms
+        If frm.Name = nombreForm Then
+            FormularioAbierto = True
+            Exit For
+        End If
+    Next frm
+End Function
+
+' Limpiar la barra de estado
+Public Sub LimpiarStatusBar()
+    Application.StatusBar = ""
+End Sub
+
+' Función para actualizar con confirmación
+Public Sub RefrescarConConfirmacion()
+    On Error Resume Next
+    
+    Dim respuesta As VbMsgBoxResult
+    respuesta = MsgBox("¿Actualizar todos los formularios abiertos?" & vbCrLf & _
+                       "Esto puede tomar unos segundos.", _
+                       vbYesNo + vbQuestion, "Actualizar")
+    
+    If respuesta = vbYes Then
+        Call RefrescarTodosLosFormularios
+        MsgBox "Formularios actualizados", vbInformation
+    End If
+End Sub
+
+ ==================================================
+' MÓDULO: ModuloActualizarDatos
+'
+' ==================================================
+Sub ActualizarInventarioDesdeCero()
+    On Error GoTo ErrorHandler
+    
+    Application.ScreenUpdating = False
+    Application.StatusBar = "Actualizando inventario..."
+    
+    Dim wsProductos As Worksheet
+    Dim wsCompras As Worksheet
+    Dim wsVentas As Worksheet
+    
+    Set wsProductos = ThisWorkbook.Sheets("Hoja1")
+    Set wsCompras = ThisWorkbook.Sheets("Compras")
+    Set wsVentas = ThisWorkbook.Sheets("Ventas")
+    
+    Dim productosNuevos As Integer
+    Dim productosActualizados As Integer
+    productosNuevos = 0
+    productosActualizados = 0
+    
+    ' ===== PASO 1: CREAR PRODUCTOS QUE NO EXISTEN =====
+    Application.StatusBar = "Buscando productos nuevos en compras..."
+    
+    Dim filaCompra As Long
+    For filaCompra = 2 To wsCompras.Cells(wsCompras.Rows.Count, "A").End(xlUp).Row
+        Dim codigoCompra As String
+        codigoCompra = wsCompras.Cells(filaCompra, 5).Value ' Columna E = Código
+        
+        ' Buscar si existe en productos
+        Dim existeProducto As Boolean
+        existeProducto = False
+        
+        Dim filaProd As Long
+        For filaProd = 3 To wsProductos.Cells(wsProductos.Rows.Count, "A").End(xlUp).Row
+            If wsProductos.Cells(filaProd, 1).Value = codigoCompra Then
+                existeProducto = True
+                Exit For
+            End If
+        Next filaProd
+        
+        ' Si no existe, crearlo
+        If Not existeProducto And codigoCompra <> "" Then
+            Dim nuevaFila As Long
+            nuevaFila = wsProductos.Cells(wsProductos.Rows.Count, "A").End(xlUp).Row + 1
+            
+            wsProductos.Cells(nuevaFila, 1).Value = codigoCompra ' Código
+            wsProductos.Cells(nuevaFila, 2).Value = wsCompras.Cells(filaCompra, 6).Value ' Descripción
+            wsProductos.Cells(nuevaFila, 3).Value = wsCompras.Cells(filaCompra, 13).Value ' Unidad
+            wsProductos.Cells(nuevaFila, 4).Value = wsCompras.Cells(filaCompra, 8).Value ' P.Unitario
+            wsProductos.Cells(nuevaFila, 5).Value = 0 ' Stock inicial en 0
+            wsProductos.Cells(nuevaFila, 6).Value = wsCompras.Cells(filaCompra, 14).Value ' P.Venta
+            wsProductos.Cells(nuevaFila, 7).Value = "Creado: " & Date
+            
+            productosNuevos = productosNuevos + 1
+        End If
+    Next filaCompra
+    
+    ' ===== PASO 2: PONER TODOS LOS STOCKS EN CERO =====
+    Application.StatusBar = "Reiniciando stocks..."
+    
+    For filaProd = 3 To wsProductos.Cells(wsProductos.Rows.Count, "A").End(xlUp).Row
+        wsProductos.Cells(filaProd, 5).Value = 0 ' Columna E = Stock a cero
+        productosActualizados = productosActualizados + 1
+    Next filaProd
+    
+    ' ===== PASO 3: SUMAR TODAS LAS COMPRAS =====
+    Application.StatusBar = "Sumando compras..."
+    
+    For filaCompra = 2 To wsCompras.Cells(wsCompras.Rows.Count, "A").End(xlUp).Row
+        codigoCompra = wsCompras.Cells(filaCompra, 5).Value
+        Dim cantidadCompra As Double
+        cantidadCompra = Val(wsCompras.Cells(filaCompra, 7).Value) ' Columna G = Cantidad
+        
+        ' Buscar el producto y sumar cantidad
+        For filaProd = 3 To wsProductos.Cells(wsProductos.Rows.Count, "A").End(xlUp).Row
+            If wsProductos.Cells(filaProd, 1).Value = codigoCompra Then
+                wsProductos.Cells(filaProd, 5).Value = wsProductos.Cells(filaProd, 5).Value + cantidadCompra
+                
+                ' Actualizar precio si es más reciente
+                If wsCompras.Cells(filaCompra, 8).Value > 0 Then
+                    wsProductos.Cells(filaProd, 4).Value = wsCompras.Cells(filaCompra, 8).Value ' Costo
+                End If
+                If wsCompras.Cells(filaCompra, 14).Value > 0 Then
+                    wsProductos.Cells(filaProd, 6).Value = wsCompras.Cells(filaCompra, 14).Value ' P.Venta
+                End If
+                
+                Exit For
+            End If
+        Next filaProd
+    Next filaCompra
+    
+    ' ===== PASO 4: RESTAR TODAS LAS VENTAS =====
+    Application.StatusBar = "Restando ventas..."
+    
+    Dim filaVenta As Long
+    For filaVenta = 2 To wsVentas.Cells(wsVentas.Rows.Count, "A").End(xlUp).Row
+        Dim codigoVenta As String
+        codigoVenta = wsVentas.Cells(filaVenta, 4).Value ' Columna D = Código
+        
+        Dim cantidadVenta As Double
+        cantidadVenta = Val(wsVentas.Cells(filaVenta, 6).Value) ' Columna F = Cantidad
+        
+        ' Solo procesar si no está anulada
+        If wsVentas.Cells(filaVenta, 16).Value <> "ANULADA" Then
+            ' Buscar el producto y restar cantidad
+            For filaProd = 3 To wsProductos.Cells(wsProductos.Rows.Count, "A").End(xlUp).Row
+                If wsProductos.Cells(filaProd, 1).Value = codigoVenta Then
+                    wsProductos.Cells(filaProd, 5).Value = wsProductos.Cells(filaProd, 5).Value - cantidadVenta
+                    Exit For
+                End If
+            Next filaProd
+        End If
+    Next filaVenta
+    
+    ' ===== PASO 5: MARCAR FECHA DE ACTUALIZACIÓN =====
+    For filaProd = 3 To wsProductos.Cells(wsProductos.Rows.Count, "A").End(xlUp).Row
+        wsProductos.Cells(filaProd, 15).Value = "Actualizado: " & Format(Now, "dd/mm/yyyy hh:mm")
+    Next filaProd
+    
+    Application.ScreenUpdating = True
+    Application.StatusBar = False
+    
+    MsgBox "INVENTARIO ACTUALIZADO COMPLETAMENTE" & vbCrLf & vbCrLf & _
+           "Productos nuevos creados: " & productosNuevos & vbCrLf & _
+           "Productos actualizados: " & productosActualizados & vbCrLf & vbCrLf & _
+           "El stock ahora refleja:" & vbCrLf & _
+           "? Todas las compras registradas" & vbCrLf & _
+           "? Menos todas las ventas registradas", vbInformation
+    
+    Exit Sub
+    
+ErrorHandler:
+    Application.ScreenUpdating = True
+    Application.StatusBar = False
+    MsgBox "Error: " & Err.Description, vbCritical
+End Sub
+
+' ==================================================
+' MÓDULO: ModuloDiseñoPOS
+'
+' ==================================================
+
+Sub DiseñarHojaPOSCompleto()
+    Dim ws As Worksheet
+    Set ws = ThisWorkbook.Sheets("POS")
+    
+    ' Desproteger temporalmente si está protegida
+    On Error Resume Next
+    ws.Unprotect "8512"
+    On Error GoTo 0
+    
+    ' === LIMPIAR Y PREPARAR LA HOJA ===
+    ws.Cells.Clear
+    ws.Cells.Interior.Color = RGB(245, 245, 245) ' Fondo gris muy claro
+    
+    ' === ENCABEZADO PRINCIPAL ===
+    With ws.Range("C2:L4")
+        .Merge
+        .Value = "?? SISTEMA DE GESTIÓN - FARMACIA LOS COLORES"
+        .Font.Name = "Segoe UI"
+        .Font.Size = 24
+        .Font.Bold = True
+        .Font.Color = RGB(255, 255, 255)
+        .Interior.Color = RGB(0, 102, 204) ' Azul farmacia
+        .HorizontalAlignment = xlCenter
+        .VerticalAlignment = xlCenter
+        .Borders.LineStyle = xlContinuous
+        .Borders.Weight = xlThick
+        .Borders.Color = RGB(0, 76, 153)
+    End With
+    
+    ' === INFORMACIÓN DEL SISTEMA ===
+    With ws.Range("C6:F6")
+        .Merge
+        .Value = "Fecha: " & Format(Date, "dd/mm/yyyy")
+        .Font.Size = 11
+        .Font.Bold = True
+        .Interior.Color = RGB(255, 255, 255)
+        .Borders.LineStyle = xlContinuous
+    End With
+    
+    With ws.Range("G6:L6")
+        .Merge
+        .Value = "Versión 2.0 - Panel Administrativo"
+        .Font.Size = 11
+        .Font.Italic = True
+        .Interior.Color = RGB(255, 255, 255)
+        .Borders.LineStyle = xlContinuous
+    End With
+    
+    ' === SECCIÓN OPERACIONES ===
+    With ws.Range("C9:L9")
+        .Merge
+        .Value = "----------- OPERACIONES PRINCIPALES -----------"
+        .Font.Size = 12
+        .Font.Bold = True
+        .Font.Color = RGB(255, 255, 255)
+        .Interior.Color = RGB(46, 204, 113) ' Verde
+        .HorizontalAlignment = xlCenter
+    End With
+    
+    ' Espacios para botones de operaciones
+    With ws.Range("C11:F13")
+        .Merge
+        .Value = "[ABRIR POS]"
+        .Font.Size = 14
+        .Font.Bold = True
+        .HorizontalAlignment = xlCenter
+        .VerticalAlignment = xlCenter
+        .Interior.Color = RGB(200, 255, 200)
+        .Borders.LineStyle = xlContinuous
+    End With
+    
+    With ws.Range("H11:L13")
+        .Merge
+        .Value = "[CERRAR Y GUARDAR]"
+        .Font.Size = 14
+        .Font.Bold = True
+        .HorizontalAlignment = xlCenter
+        .VerticalAlignment = xlCenter
+        .Interior.Color = RGB(255, 200, 200)
+        .Borders.LineStyle = xlContinuous
+    End With
+    
+    ' === SECCIÓN SEGURIDAD ===
+    With ws.Range("C16:L16")
+        .Merge
+        .Value = "----------- CONTROL DE SEGURIDAD -----------"
+        .Font.Size = 12
+        .Font.Bold = True
+        .Font.Color = RGB(255, 255, 255)
+        .Interior.Color = RGB(243, 156, 18) ' Naranja
+        .HorizontalAlignment = xlCenter
+    End With
+    
+    ' Espacios para botones de seguridad
+    With ws.Range("C18:F20")
+        .Merge
+        .Value = "?? [BLOQUEAR]"
+        .Font.Size = 14
+        .Font.Bold = True
+        .HorizontalAlignment = xlCenter
+        .VerticalAlignment = xlCenter
+        .Interior.Color = RGB(255, 235, 200)
+        .Borders.LineStyle = xlContinuous
+    End With
+    
+    With ws.Range("H18:L20")
+        .Merge
+        .Value = "?? [DESBLOQUEAR]"
+        .Font.Size = 14
+        .Font.Bold = True
+        .HorizontalAlignment = xlCenter
+        .VerticalAlignment = xlCenter
+        .Interior.Color = RGB(200, 235, 255)
+        .Borders.LineStyle = xlContinuous
+    End With
+    
+    ' === ESTADO DEL SISTEMA ===
+    With ws.Range("C23:L24")
+        .Merge
+        .Interior.Color = RGB(255, 255, 255)
+        .Borders.LineStyle = xlContinuous
+    End With
+    
+    ' Agregar estado dinámico
+    ws.Range("C23").Value = "Estado del Sistema:"
+    ws.Range("F23").Value = "? OPERATIVO"
+    ws.Range("F23").Font.Color = RGB(0, 176, 80)
+    ws.Range("F23").Font.Bold = True
+    
+    ws.Range("I23").Value = "Último Backup:"
+    ws.Range("K23").Value = "Pendiente"
+    ws.Range("K23").Font.Color = RGB(255, 0, 0)
+    
+    ' === PIE DE INFORMACIÓN ===
+    With ws.Range("C27:L28")
+        .Merge
+        .Value = "Desarrollado para Farmacia Los Colores - Sistema POS Integrado" & vbCrLf & _
+                 "Soporte: contacto@farmacia.com | Tel: 319-3790165"
+        .Font.Size = 9
+        .Font.Italic = True
+        .HorizontalAlignment = xlCenter
+        .Interior.Color = RGB(230, 230, 250)
+        .Borders.LineStyle = xlContinuous
+    End With
+    
+    ' === AJUSTAR COLUMNAS ===
+    ws.Columns("A:B").ColumnWidth = 3
+    ws.Columns("C:L").ColumnWidth = 10
+    ws.Columns("M:N").ColumnWidth = 3
+    
+    ' === AJUSTAR FILAS ===
+    ws.Rows("1").RowHeight = 10
+    ws.Rows("2:4").RowHeight = 25
+    ws.Rows("11:13").RowHeight = 20
+    ws.Rows("18:20").RowHeight = 20
+    
+    ' === OCULTAR LÍNEAS DE CUADRÍCULA ===
+    ActiveWindow.DisplayGridlines = False
+    
+    ' === PROTEGER DISEÑO ===
+    ws.Range("A:B").Locked = True
+    ws.Range("M:XFD").Locked = True
+    ws.Range("30:1048576").Locked = True
+    
+    MsgBox "? Diseño aplicado exitosamente" & vbCrLf & vbCrLf & _
+           "Ahora coloca los botones sobre las áreas marcadas", vbInformation
+    
+End Sub
+
+Sub ActualizarEstadoBackup()
+    ' Llamar después de hacer backup
+    Dim ws As Worksheet
+    Set ws = ThisWorkbook.Sheets("POS")
+    
+    ws.Range("K23").Value = Format(Now, "dd/mm hh:mm")
+    ws.Range("K23").Font.Color = RGB(0, 176, 80) ' Verde
+End Sub
+
+' ==================================================
+' MÓDULO: ModuloProteccion
+'
+' ==================================================
+
+Sub ProtegerTodo()
+    Dim ws As Worksheet
+    Dim password As String
+    password = "8512"
+    
+    ' Proteger todas las hojas EXCEPTO POS
+    For Each ws In ThisWorkbook.Worksheets
+        If ws.Name <> "POS" Then  ' NO proteger la hoja POS
+            ws.Protect password:=password, _
+                       DrawingObjects:=True, _
+                       Contents:=True, _
+                       Scenarios:=True
+        End If
+    Next ws
+    
+    MsgBox "? Hojas protegidas (excepto POS)", vbInformation
+End Sub
+
+Sub DesprotegerTodo()
+    Dim ws As Worksheet
+    Dim password As String
+    
+    ' Pedir contraseña
+    password = InputBox("Ingrese contraseña de administrador:", "Desproteger")
+    
+    If password <> "8512" Then
+        MsgBox "Contraseña incorrecta", vbCritical
+        Exit Sub
+    End If
+    
+    ' Desproteger todas las hojas
+    On Error Resume Next
+    For Each ws In ThisWorkbook.Worksheets
+        ws.Unprotect password:="8512"
+    Next ws
+    On Error GoTo 0
+    
+    MsgBox "? Todas las hojas desprotegidas", vbInformation
+End Sub
+
+
+' ==================================================
+' MÓDULO: ModuloSeleccion
+'
+' ==================================================
+
+' MÓDULO PARA SELECCIÓN DE TEXTO EN COMPRAS
+
+Public Sub SeleccionarCantidad()
+    On Error Resume Next
+    frmCompras.txtCantidad.SelStart = 0
+    frmCompras.txtCantidad.SelLength = Len(frmCompras.txtCantidad.Text)
+End Sub
+
+Public Sub SeleccionarDescuento()
+    On Error Resume Next
+    frmCompras.txtDescuento.SelStart = 0
+    frmCompras.txtDescuento.SelLength = Len(frmCompras.txtDescuento.Text)
+End Sub
+
+Public Sub SeleccionarPrecioUnitario()
+    On Error Resume Next
+    frmCompras.txtPrecioUnitario.SelStart = 0
+    frmCompras.txtPrecioUnitario.SelLength = Len(frmCompras.txtPrecioUnitario.Text)
+End Sub
+
+Public Sub SeleccionarPrecioVenta()
+    On Error Resume Next
+    frmCompras.txtPrecioVenta.SelStart = 0
+    frmCompras.txtPrecioVenta.SelLength = Len(frmCompras.txtPrecioVenta.Text)
+End Sub
+
+Public Sub SeleccionarBuscar()
+    On Error Resume Next
+    frmCompras.txtBuscar.SelStart = 0
+    frmCompras.txtBuscar.SelLength = Len(frmCompras.txtBuscar.Text)
+End Sub
+
+Public Sub SeleccionarProducto()
+    On Error Resume Next
+    frmCompras.txtProducto.SelStart = 0
+    frmCompras.txtProducto.SelLength = Len(frmCompras.txtProducto.Text)
+End Sub
+
+Public Sub SeleccionarCodigo()
+    On Error Resume Next
+    frmCompras.txtCodigo.SelStart = 0
+    frmCompras.txtCodigo.SelLength = Len(frmCompras.txtCodigo.Text)
+End Sub
+
+' ==================================================
+' MÓDULO: ModuloSincronizacion
+'
+' ==================================================
+
+Sub SincronizarInteligente()
+    On Error GoTo ErrorHandler
+    
+    Dim archivoRemoto As Variant
+    Dim wbRemoto As Workbook
+    Dim wsRemotoProductos As Worksheet
+    Dim wsRemotoVentas As Worksheet
+    Dim wsRemotoCompras As Worksheet
+    Dim wsLocalProductos As Worksheet
+    Dim wsLocalVentas As Worksheet
+    Dim wsLocalCompras As Worksheet
+    
+    ' Configurar hojas locales
+    Set wsLocalProductos = ThisWorkbook.Sheets("Hoja1")
+    Set wsLocalVentas = ThisWorkbook.Sheets("Ventas")
+    
+    On Error Resume Next
+    Set wsLocalCompras = ThisWorkbook.Sheets("Compras")
+    On Error GoTo ErrorHandler
+    
+    ' Seleccionar archivo
+    MsgBox "Seleccione el archivo de la farmacia para sincronizar", vbInformation
+    
+    archivoRemoto = Application.GetOpenFilename("Excel Files (*.xlsm), *.xlsm")
+    
+    If archivoRemoto = False Then
+        MsgBox "Sincronización cancelada", vbInformation
+        Exit Sub
+    End If
+    
+    Application.StatusBar = "Abriendo archivo..."
+    Application.ScreenUpdating = False
+    
+    ' Abrir archivo
+    Set wbRemoto = Workbooks.Open(archivoRemoto, ReadOnly:=True)
+    Set wsRemotoProductos = wbRemoto.Sheets("Hoja1")
+    Set wsRemotoVentas = wbRemoto.Sheets("Ventas")
+    
+    On Error Resume Next
+    Set wsRemotoCompras = wbRemoto.Sheets("Compras")
+    On Error GoTo ErrorHandler
+    
+    Dim cambios As Integer
+    cambios = 0
+    
+    ' ===== PRODUCTOS =====
+    Application.StatusBar = "Sincronizando productos..."
+    Dim filaR As Long, filaL As Long
+    
+    For filaR = 3 To wsRemotoProductos.Cells(wsRemotoProductos.Rows.Count, "A").End(xlUp).Row
+        Dim codigo As String
+        codigo = wsRemotoProductos.Cells(filaR, 1).Value
+        
+        Dim encontrado As Boolean
+        encontrado = False
+        
+        ' Buscar producto
+        For filaL = 3 To wsLocalProductos.Cells(wsLocalProductos.Rows.Count, "A").End(xlUp).Row
+            If wsLocalProductos.Cells(filaL, 1).Value = codigo Then
+                encontrado = True
+                ' Actualizar stock y precio
+                wsLocalProductos.Cells(filaL, 5).Value = wsRemotoProductos.Cells(filaR, 5).Value
+                wsLocalProductos.Cells(filaL, 6).Value = wsRemotoProductos.Cells(filaR, 6).Value
+                cambios = cambios + 1
+                Exit For
+            End If
+        Next filaL
+        
+        ' Si no existe, agregar
+        If Not encontrado Then
+            Dim nuevaFila As Long
+            nuevaFila = wsLocalProductos.Cells(wsLocalProductos.Rows.Count, "A").End(xlUp).Row + 1
+            wsRemotoProductos.Rows(filaR).Copy
+            wsLocalProductos.Rows(nuevaFila).PasteSpecial xlPasteAll
+            cambios = cambios + 1
+        End If
+    Next filaR
+    
+    ' ===== VENTAS FALTANTES =====
+    Application.StatusBar = "Sincronizando ventas..."
+    
+    For filaR = 2 To wsRemotoVentas.Cells(wsRemotoVentas.Rows.Count, "A").End(xlUp).Row
+        Dim numVenta As Long
+        numVenta = Val(wsRemotoVentas.Cells(filaR, 3).Value)
+        
+        Dim existe As Boolean
+        existe = False
+        
+        ' Verificar si existe
+        For filaL = 2 To wsLocalVentas.Cells(wsLocalVentas.Rows.Count, "A").End(xlUp).Row
+            If Val(wsLocalVentas.Cells(filaL, 3).Value) = numVenta Then
+                existe = True
+                Exit For
+            End If
+        Next filaL
+        
+        ' Si no existe, copiar
+        If Not existe Then
+            nuevaFila = wsLocalVentas.Cells(wsLocalVentas.Rows.Count, "A").End(xlUp).Row + 1
+            wsRemotoVentas.Rows(filaR).Copy
+            wsLocalVentas.Rows(nuevaFila).PasteSpecial xlPasteAll
+            cambios = cambios + 1
+        End If
+    Next filaR
+    
+    ' ===== COMPRAS FALTANTES (CORREGIDO) =====
+If Not wsRemotoCompras Is Nothing And Not wsLocalCompras Is Nothing Then
+    Application.StatusBar = "Sincronizando compras..."
+    
+    For filaR = 2 To wsRemotoCompras.Cells(wsRemotoCompras.Rows.Count, "A").End(xlUp).Row
+        Dim numCompra As Long
+        numCompra = Val(wsRemotoCompras.Cells(filaR, 3).Value) ' Columna C
+        
+        ' Solo procesar si es un número válido de compra
+        If numCompra > 0 And numCompra < 100000 Then
+            
+            existe = False
+            
+            ' Buscar si existe localmente
+            For filaL = 2 To wsLocalCompras.Cells(wsLocalCompras.Rows.Count, "A").End(xlUp).Row
+                If Val(wsLocalCompras.Cells(filaL, 3).Value) = numCompra Then
+                    existe = True
+                    Exit For
+                End If
+            Next filaL
+            
+            ' Si no existe, copiar TODA la fila (incluyendo columna O con factura)
+            If Not existe Then
+                nuevaFila = wsLocalCompras.Cells(wsLocalCompras.Rows.Count, "A").End(xlUp).Row + 1
+                
+                ' Copiar fila completa para mantener TODOS los datos
+                wsRemotoCompras.Rows(filaR).EntireRow.Copy
+                wsLocalCompras.Rows(nuevaFila).PasteSpecial xlPasteAll
+                
+                cambios = cambios + 1
+            End If
+        End If
+    Next filaR
+End If
+    
+    ' Limpiar y cerrar
+    Application.CutCopyMode = False
+    wbRemoto.Close SaveChanges:=False
+    ThisWorkbook.Save
+    
+    Application.ScreenUpdating = True
+    Application.StatusBar = False
+    
+    MsgBox "Sincronización completada" & vbCrLf & _
+           "Total de cambios: " & cambios, vbInformation
+    
+    Exit Sub
+    
+ErrorHandler:
+    Application.ScreenUpdating = True
+    Application.StatusBar = False
+    If Not wbRemoto Is Nothing Then wbRemoto.Close False
+    MsgBox "Error: " & Err.Description, vbCritical
+End Sub
+
+
+' ==================================================
+' MÓDULO: Movimientos
+'
+' ==================================================
+' ===== Movimientos.bas =====
+Option Explicit
+
+' Config
+Private Const HOJA_MOV As String = "Movimientos" ' nombre de la hoja del ledger
+Private Const TABLA_MOV As String = "tblMovimientos" ' si no existe, se anexará por filas
+
+Public Function WasOperationApplied(opId As String) As Boolean
+    Dim ws As Worksheet, lo As ListObject, rng As Range, f As Range
+    Set ws = ThisWorkbook.Worksheets(HOJA_MOV)
+    On Error Resume Next
+    Set lo = ws.ListObjects(TABLA_MOV)
+    On Error GoTo 0
+
+    If Not lo Is Nothing Then
+        Set rng = lo.ListColumns("op_id").DataBodyRange
+    Else
+        ' Busca en toda la columna A (op_id)
+        Set rng = ws.Range("A:A")
+    End If
+
+    If rng Is Nothing Then
+        WasOperationApplied = False
+        Exit Function
+    End If
+
+    Set f = rng.Find(What:=opId, LookIn:=xlValues, LookAt:=xlWhole)
+    WasOperationApplied = Not (f Is Nothing)
+End Function
+
+Public Sub LogMovement(opId As String, sku As String, delta As Long, _
+                       Optional motivo As String = "", Optional referencia As String = "")
+    Dim ws As Worksheet, lo As ListObject, newRow As ListRow, nextRow As Long
+    Set ws = ThisWorkbook.Worksheets(HOJA_MOV)
+    On Error Resume Next
+    Set lo = ws.ListObjects(TABLA_MOV)
+    On Error GoTo 0
+
+    If Not lo Is Nothing Then
+        Set newRow = lo.ListRows.Add
+        With newRow.Range
+            .Cells(1, 1).Value = opId
+            .Cells(1, 2).Value = sku
+            .Cells(1, 3).Value = delta
+            .Cells(1, 4).Value = motivo
+            .Cells(1, 5).Value = referencia
+            .Cells(1, 6).Value = Now
+        End With
+    Else
+        ' Anexar por filas simples
+        nextRow = ws.Cells(ws.Rows.Count, "A").End(xlUp).Row + 1
+        ws.Cells(nextRow, 1).Value = opId
+        ws.Cells(nextRow, 2).Value = sku
+        ws.Cells(nextRow, 3).Value = delta
+        ws.Cells(nextRow, 4).Value = motivo
+        ws.Cells(nextRow, 5).Value = referencia
+        ws.Cells(nextRow, 6).Value = Now
+    End If
+End Sub
+
+Public Function stockActual(sku As String) As Long
+    ' Suma de delta por sku
+    Dim ws As Worksheet, lastRow As Long, rngSku As Range, rngDelta As Range, i As Long, total As Long
+    Set ws = ThisWorkbook.Worksheets(HOJA_MOV)
+    lastRow = ws.Cells(ws.Rows.Count, "A").End(xlUp).Row
+    If lastRow < 2 Then
+        stockActual = 0
+        Exit Function
+    End If
+
+    Set rngSku = ws.Range("B2:B" & lastRow)   ' sku
+    Set rngDelta = ws.Range("C2:C" & lastRow) ' delta
+
+    For i = 1 To rngSku.Rows.Count
+        If CStr(rngSku.Cells(i, 1).Value) = sku Then
+            total = total + CLng(Val(rngDelta.Cells(i, 1).Value))
+        End If
+    Next i
+    stockActual = total
+End Function
+
+
+
+' ==================================================
+' MÓDULO: mPerf
+'
+' ==================================================
+
+Option Explicit
+#If VBA7 Then
+    Private Declare PtrSafe Function GetTickCount64 Lib "kernel32" () As LongLong
+#Else
+    Private Declare Function GetTickCount Lib "kernel32" () As Long
+#End If
+
+Public Sub SpeedOn()
+    With Application
+        .ScreenUpdating = False
+        .EnableEvents = False
+        .DisplayStatusBar = False
+        .Calculation = xlCalculationManual
+    End With
+End Sub
+
+Public Sub SpeedOff()
+    With Application
+        .ScreenUpdating = True
+        .EnableEvents = True
+        .DisplayStatusBar = True
+        .Calculation = xlCalculationAutomatic
+        .Calculate
+    End With
+End Sub
+
+Public Function TNow() As Double
+#If VBA7 Then
+    TNow = GetTickCount64() / 1000#
+#Else
+    TNow = GetTickCount() / 1000#
+#End If
+End Function
+
+' ==================================================
+' MÓDULO: orquestador
+'
+' ==================================================
+
+Sub Sincronizar_HOY()
+    ImportarVentasYComprasDeHoy   ' del modMigracionLite
+    AplicarMovimientosDeHoy       ' del modAplicarMovimientos
+    MsgBox "Sincronizado HOY: importado + aplicado.", vbInformation
+End Sub
+
+Sub Sincronizar_TODO()
+    ImportarVentasYCompras_Todo
+    AplicarMovimientos_Todo
+    MsgBox "Sincronizado TODO: importado + aplicado.", vbInformation
+End Sub
+
+
